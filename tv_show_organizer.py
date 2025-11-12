@@ -636,6 +636,16 @@ class MediaLibraryOrganizer:
                 'seasons': []
             }
             
+            # Track files found and moved per folder for cleanup
+            # Key: folder Path, Value: {'found': count, 'moved': count}
+            folder_file_counts = {}
+            
+            # For direct files, also track the show folder
+            if tv_show.folder_type == FolderType.DIRECT_FILES:
+                show_folder = tv_show.original_folder
+                total_episodes = sum(len(s.episodes) for s in tv_show.seasons)
+                folder_file_counts[show_folder] = {'found': total_episodes, 'moved': 0}
+            
             for season in tv_show.seasons:
                 season_dir = show_output_dir / f"Season {season.season_number}"
 
@@ -645,6 +655,13 @@ class MediaLibraryOrganizer:
                     'season_number': season.season_number,
                     'episodes': []
                 }
+                
+                # Track files in this season's original folder (for season subfolders case)
+                season_folder = season.original_folder
+                if tv_show.folder_type == FolderType.SEASON_SUBFOLDERS:
+                    if season_folder not in folder_file_counts:
+                        folder_file_counts[season_folder] = {'found': 0, 'moved': 0}
+                    folder_file_counts[season_folder]['found'] = len(season.episodes)
                 
                 # Create season directory
                 if not self.dry_run:
@@ -678,6 +695,16 @@ class MediaLibraryOrganizer:
                             self.stats['episodes_moved'] += 1
                             episode_details['status'] = 'moved'
                             
+                            # Track successful move for folder cleanup
+                            if tv_show.folder_type == FolderType.DIRECT_FILES:
+                                # For direct files, track the show folder
+                                folder_file_counts[show_folder]['moved'] += 1
+                            else:
+                                # For season subfolders, track the season folder
+                                episode_folder = episode.original_path.parent
+                                if episode_folder in folder_file_counts:
+                                    folder_file_counts[episode_folder]['moved'] += 1
+                            
                         except Exception as e:
                             self.logger.error(f"Failed to move {episode.original_path}: {e}")
                             self.stats['errors'] += 1
@@ -687,11 +714,65 @@ class MediaLibraryOrganizer:
                     else:
                         self.stats['episodes_moved'] += 1
                         episode_details['status'] = 'dry_run'
+                        # In dry-run, also track for reporting
+                        if tv_show.folder_type == FolderType.DIRECT_FILES:
+                            folder_file_counts[show_folder]['moved'] += 1
+                        else:
+                            episode_folder = episode.original_path.parent
+                            if episode_folder in folder_file_counts:
+                                folder_file_counts[episode_folder]['moved'] += 1
                     
                     season_details['episodes'].append(episode_details)
                 
+                # After processing all episodes in this season, check if folder is empty and remove it
+                if not self.dry_run and tv_show.folder_type == FolderType.SEASON_SUBFOLDERS:
+                    if season_folder in folder_file_counts:
+                        counts = folder_file_counts[season_folder]
+                        if counts['found'] > 0 and counts['found'] == counts['moved']:
+                            try:
+                                season_folder.rmdir()
+                                self.logger.info(f"    {Colors.CYAN}Removed empty folder: {season_folder}{Colors.RESET}")
+                            except OSError:
+                                # Folder not empty or doesn't exist, skip silently
+                                pass
+                
                 show_details['seasons'].append(season_details)
                 self.stats['seasons_processed'] += 1
+            
+            # After processing all seasons, check if show folder is empty and remove it
+            if not self.dry_run:
+                show_folder = tv_show.original_folder
+                if tv_show.folder_type == FolderType.DIRECT_FILES:
+                    # For direct files, check if all files from the show folder were moved
+                    if show_folder in folder_file_counts:
+                        counts = folder_file_counts[show_folder]
+                        if counts['found'] > 0 and counts['found'] == counts['moved']:
+                            try:
+                                show_folder.rmdir()
+                                self.logger.info(f"  {Colors.CYAN}Removed empty show folder: {show_folder}{Colors.RESET}")
+                            except OSError:
+                                # Folder not empty or doesn't exist, skip silently
+                                pass
+                else:
+                    # For season subfolders, check if all season folders were removed
+                    # Count how many season folders should have been removed
+                    seasons_removed = 0
+                    total_seasons = len(tv_show.seasons)
+                    for season in tv_show.seasons:
+                        season_folder = season.original_folder
+                        if season_folder in folder_file_counts:
+                            counts = folder_file_counts[season_folder]
+                            if counts['found'] > 0 and counts['found'] == counts['moved']:
+                                seasons_removed += 1
+                    
+                    # If all season folders were removed, the show folder should be empty
+                    if seasons_removed == total_seasons and total_seasons > 0:
+                        try:
+                            show_folder.rmdir()
+                            self.logger.info(f"  {Colors.CYAN}Removed empty show folder: {show_folder}{Colors.RESET}")
+                        except OSError:
+                            # Folder not empty or doesn't exist, skip silently
+                            pass
             
             self.stats['shows_processed'] += 1
             self.processed_shows.append(show_details)
