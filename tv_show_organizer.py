@@ -47,12 +47,16 @@ class Episode:
     episode_number: int
     title: str = ""
     extension: str = ""
+    end_episode_number: Optional[int] = None  # For multi-episode files (e.g., S01E01-S01E02)
     
     def __post_init__(self):
         if not self.extension:
             self.extension = self.original_path.suffix
         if not self.title:
-            self.title = f"Episode {self.episode_number:02d}"
+            if self.end_episode_number:
+                self.title = f"Episode {self.episode_number:02d}-{self.end_episode_number:02d}"
+            else:
+                self.title = f"Episode {self.episode_number:02d}"
 
 @dataclass
 class Season:
@@ -256,6 +260,10 @@ class MediaLibraryOrganizer:
     
     def extract_season_number(self, text: str, fallback: int = 1) -> int:
         """Extract season number from text using regex patterns including Chinese"""
+        # Normalize text first: remove "全xx集" patterns (episode count, not season)
+        # This prevents numbers from "全10集" from being mistaken as season numbers
+        text = re.sub(r'全\s*\d+\s*集', '', text)
+        
         for pattern_idx, pattern in enumerate(self.SEASON_PATTERNS):
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
@@ -272,19 +280,6 @@ class MediaLibraryOrganizer:
                     match_end = match.end()
                     
                     # Filter out false positives:
-                    # - "全xx集" pattern (全21集, 全12集, etc.) - this indicates episode count, not season
-                    # Check if the number is within "全...集" context
-                    # Look for "全" before the match and "集" after the match within reasonable distance
-                    text_before_match = text[:match_start]
-                    text_after_match = text[match_end:]
-                    # Check if "全" appears before (within 10 chars) and "集" appears after (within 10 chars)
-                    if '全' in text_before_match[-10:] and '集' in text_after_match[:10]:
-                        # Verify this is actually a "全xx集" pattern by checking the context
-                        pattern_context = text[max(0, match_start-15):min(len(text), match_end+15)]
-                        # Match pattern like "全21集", "全 12 集", "全12集" etc.
-                        if re.search(r'全\s*' + re.escape(matched_text) + r'\s*集', pattern_context):
-                            continue
-                    
                     # - Years (1900-2099) - check if this number is part of a year
                     if 1900 <= season_num <= 2099:
                         # Look for 4-digit year pattern around the match
@@ -324,14 +319,103 @@ class MediaLibraryOrganizer:
                     continue
         return fallback
     
-    def extract_episode_info(self, filename: str, position: int = 1) -> Tuple[int, int]:
-        """Extract season and episode numbers from filename including Chinese numerals"""
+    def extract_episode_info(self, filename: str, position: int = 1) -> Tuple[int, int, Optional[int]]:
+        """Extract season and episode numbers from filename including Chinese numerals
+        Returns: (season_num, episode_num, end_episode_num) where end_episode_num is None for single episodes
+        """
         season_num = 1
         episode_num = position
+        end_episode_num = None
+        
+        # Remove video resolution patterns (1080p, 720p, 480p, etc.) FIRST to prevent them from being
+        # mistaken as episode numbers. This must be done BEFORE space normalization to avoid
+        # cases like "S02E01 1080p" becoming "S02E011080p" which would be parsed incorrectly.
+        # Patterns: 1080p, 720p, 480p, 1080i, 720i, 2160p, 4K, etc.
+        normalized_filename = re.sub(r'\b(?:1080|720|480|360|240|2160|1440|4320)[pi]?\b', ' ', filename, flags=re.IGNORECASE)
+        # Also remove 4K, 8K patterns
+        normalized_filename = re.sub(r'\b[48]K\b', ' ', normalized_filename, flags=re.IGNORECASE)
+        # Clean up multiple spaces
+        normalized_filename = re.sub(r'\s+', ' ', normalized_filename)
         
         # Normalize filename: remove spaces between digits (e.g., "1 8" -> "18")
         # This helps with filenames like "1 8.mp4" which should be episode 18
-        normalized_filename = re.sub(r'(\d)\s+(\d)', r'\1\2', filename)
+        # But be careful: don't remove spaces that are between episode patterns and other text
+        normalized_filename = re.sub(r'(\d)\s+(\d)', r'\1\2', normalized_filename)
+        
+        # First, check for multi-episode patterns like S01E01-S01E02, S01E01E02, etc.
+        multi_episode_patterns = [
+            # Dash-separated patterns
+            (r'[Ss](\d+)[Ee][Pp]?(\d+)\s*-\s*[Ss](\d+)[Ee][Pp]?(\d+)', 's_dash_s'),  # S01E01-S01E02, S01EP01-S01EP02
+            (r'[Ss](\d+)[Ee](\d+)\s*-\s*[Ee](\d+)', 's_dash_e'),  # S01E01-E02 (same season)
+            (r'(\d+)[xX](\d+)\s*-\s*(\d+)[xX](\d+)', 'x_dash_x'),  # 01x02-01x03 (season x episode format)
+            # Concatenated patterns (no dash)
+            (r'[Ss](\d+)[Ee][Pp]?(\d+)[Ee][Pp]?(\d+)', 's_concat'),  # S01E01E02, S01EP01EP02
+            (r'[Ee][Pp]?(\d+)[Ee][Pp]?(\d+)', 'e_concat'),  # E01E02, EP01EP02 (no season)
+        ]
+        
+        for pattern, pattern_type in multi_episode_patterns:
+            match = re.search(pattern, normalized_filename, re.IGNORECASE)
+            if match:
+                try:
+                    groups = match.groups()
+                    if len(groups) == 4:
+                        # S01E01-S01E02 or 01x02-01x03 format
+                        if pattern_type == 'x_dash_x':
+                            # 01x02-01x03 format
+                            season1 = int(match.group(1))
+                            episode1 = int(match.group(2))
+                            season2 = int(match.group(3))
+                            episode2 = int(match.group(4))
+                            # Only treat as multi-episode if same season
+                            if season1 == season2 and episode2 > episode1:
+                                season_num = season1
+                                episode_num = episode1
+                                end_episode_num = episode2
+                                return season_num, episode_num, end_episode_num
+                        elif pattern_type == 's_dash_s':
+                            # S01E01-S01E02 format
+                            season1 = int(match.group(1))
+                            episode1 = int(match.group(2))
+                            season2 = int(match.group(3))
+                            episode2 = int(match.group(4))
+                            # Only treat as multi-episode if same season
+                            if season1 == season2 and episode2 > episode1:
+                                season_num = season1
+                                episode_num = episode1
+                                end_episode_num = episode2
+                                return season_num, episode_num, end_episode_num
+                    elif len(groups) == 3:
+                        if pattern_type == 's_dash_e':
+                            # S01E01-E02 format
+                            season1 = int(match.group(1))
+                            episode1 = int(match.group(2))
+                            episode2 = int(match.group(3))
+                            if episode2 > episode1:
+                                season_num = season1
+                                episode_num = episode1
+                                end_episode_num = episode2
+                                return season_num, episode_num, end_episode_num
+                        elif pattern_type == 's_concat':
+                            # S01E01E02 format: group1=season, group2=ep1, group3=ep2
+                            season1 = int(match.group(1))
+                            episode1 = int(match.group(2))
+                            episode2 = int(match.group(3))
+                            if episode2 > episode1:
+                                season_num = season1
+                                episode_num = episode1
+                                end_episode_num = episode2
+                                return season_num, episode_num, end_episode_num
+                        elif pattern_type == 'e_concat':
+                            # E01E02 format (no season, use default season 1)
+                            episode1 = int(match.group(1))
+                            episode2 = int(match.group(2))
+                            if episode2 > episode1:
+                                season_num = 1  # Default season
+                                episode_num = episode1
+                                end_episode_num = episode2
+                                return season_num, episode_num, end_episode_num
+                except (ValueError, IndexError):
+                    continue
         
         # Try S##E## format first (season-episode patterns)
         for pattern in self.EPISODE_PATTERNS[:4]:  # S##EP##, S##E##, S##.E##, ##x##
@@ -341,7 +425,7 @@ class MediaLibraryOrganizer:
                     if len(match.groups()) == 2:
                         season_num = int(match.group(1))
                         episode_num = int(match.group(2))
-                        return season_num, episode_num
+                        return season_num, episode_num, None
                 except (ValueError, IndexError):
                     continue
         
@@ -353,10 +437,10 @@ class MediaLibraryOrganizer:
                     matched_text = match.group(1)
                     if re.search(r'[一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾]', matched_text):
                         episode_num = self.parse_chinese_number(matched_text)
-                        return season_num, episode_num
+                        return season_num, episode_num, None
                     elif matched_text.isdigit():
                         episode_num = int(matched_text)
-                        return season_num, episode_num
+                        return season_num, episode_num, None
                 except (ValueError, IndexError):
                     continue
         
@@ -366,7 +450,7 @@ class MediaLibraryOrganizer:
         if match:
             try:
                 episode_num = int(match.group(1))
-                return season_num, episode_num
+                return season_num, episode_num, None
             except (ValueError, IndexError):
                 pass
         
@@ -392,47 +476,136 @@ class MediaLibraryOrganizer:
                 else:
                     # No season indicator, treat as episode only (e.g., "1-09" = episode 9)
                     episode_num = second_num
-                return season_num, episode_num
+                return season_num, episode_num, None
             except (ValueError, IndexError):
                 pass
         
         # Try numeric fallback pattern, but avoid file extensions
         # Remove file extension before trying numeric patterns
         name_without_ext = normalized_filename.rsplit('.', 1)[0] if '.' in normalized_filename else normalized_filename
+        
+        # If season number is still default (1), try to extract it from filename first
+        # This helps us exclude it from episode number candidates
+        # BUT: Only do this if the filename has explicit season patterns (S01, Season 1, etc.)
+        # For simple numeric filenames like "01.ts", "10.ts", these are episode-only, not season numbers
+        if season_num == 1:
+            # Check if filename has explicit season patterns before trying generic extraction
+            has_explicit_season = bool(re.search(
+                r'[Ss](?:eason\s*)?\d+|第[一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾\d]+季|'
+                r'[一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾]+季|\d+\s*单元',
+                normalized_filename, re.IGNORECASE
+            ))
+            if has_explicit_season:
+                detected_season = self.extract_season_number(normalized_filename, fallback=1)
+                if 1 <= detected_season <= 100:  # Valid season range
+                    season_num = detected_season
+        
         number_pattern = self.EPISODE_PATTERNS[8]  # r'(?:^|\D)(\d{1,3})(?:\D|$)' 
-        match = re.search(number_pattern, name_without_ext, re.IGNORECASE)
-        if match:
+        
+        # Find all potential matches and filter out false positives
+        all_matches = list(re.finditer(number_pattern, name_without_ext, re.IGNORECASE))
+        valid_matches = []
+        
+        for match in all_matches:
             try:
                 found_num = int(match.group(1))
                 match_start = match.start()
                 match_end = match.end()
                 
                 # Filter out false positives:
+                # - Codec numbers (H264, H265, x264, x265, etc.) - check context
+                context_after = name_without_ext[match_end:min(len(name_without_ext), match_end+6)].lower()
+                context_before = name_without_ext[max(0, match_start-3):match_start].lower()
+                # Check wider context for codec patterns
+                wider_context = name_without_ext[max(0, match_start-5):min(len(name_without_ext), match_end+10)].lower()
+                
+                # Check if preceded by H, x, X, or common codec patterns (e.g., H265, x264, [H264])
+                is_codec_before = (
+                    # Direct codec patterns before number: H264, x264, [H264], (H264), .x264, _x264
+                    context_before in ['h', 'x', '[h', '(h', '.h', '_h', ' h', ' x', '.xh', '.x', '[xh', '(xh'] or
+                    context_before.endswith('h') or context_before.endswith('x') or context_before.endswith('[h') or
+                    context_before.endswith('.x') or context_before.endswith(' x') or
+                    # Check if number is part of codec pattern like .x264, .h265 (where number is 264/265)
+                    (found_num in [264, 265] and (
+                        context_before.endswith('.x') or context_before.endswith('.h') or
+                        context_before.endswith(' x') or context_before.endswith(' h') or
+                        context_before.endswith('[x') or context_before.endswith('[h') or
+                        context_before.endswith('(x') or context_before.endswith('(h')
+                    ))
+                )
+                
+                # Check if followed by codec patterns (e.g., 01.x264, 01 h265, 01 [h264])
+                is_codec_after = (
+                    # Codec patterns after number: .x264, .h264, .x265, .h265
+                    re.search(r'^\.(x|h)26[45]', context_after, re.IGNORECASE) or
+                    # Codec patterns with space:  h264,  h265,  x264,  x265
+                    re.search(r'^\s+(x|h)26[45]', context_after, re.IGNORECASE) or
+                    # Codec patterns in brackets: [h264], [x264], [h265], [x265]
+                    re.search(r'^\s*\[(x|h)26[45]', context_after, re.IGNORECASE) or
+                    # Codec patterns in parentheses: (h264), (x264), (h265), (x265)
+                    re.search(r'^\s*\((x|h)26[45]', context_after, re.IGNORECASE) or
+                    # Short patterns: 264], 265), .x, ]4, ]5
+                    context_after[:3] in ['4]', '5]', '.x', ']4', ']5'] or
+                    context_after.startswith(']') or context_after.startswith('.x')
+                )
+                
+                # Check for H264/H265/x264/x265 patterns in wider context
+                is_codec_in_context = (
+                    re.search(r'[hx]26[45]', wider_context, re.IGNORECASE) or
+                    # Also filter out common codec numbers (264, 265) when they appear in codec-like context
+                    (found_num in [264, 265] and (
+                        'h26' in wider_context or 'x26' in wider_context or 
+                        '[h26' in wider_context or '.x26' in wider_context or
+                        'h]' in wider_context or 'x]' in wider_context
+                    ))
+                )
+                
+                is_codec = is_codec_before or is_codec_after or is_codec_in_context
+                
+                if is_codec:
+                    continue  # Skip this match (codec number)
+                
                 # - Video resolutions (1080, 720, 480, etc.) - check if followed by 'p', 'i', or preceded by resolution context
-                context_after = name_without_ext[match_end:min(len(name_without_ext), match_end+2)].lower()
-                context_before = name_without_ext[max(0, match_start-5):match_start].lower()
                 if (context_after in ['p', 'i'] or 
-                    '1080' in context_before or '720' in context_before or '480' in context_before or
+                    '1080' in name_without_ext[max(0, match_start-5):match_start].lower() or 
+                    '720' in name_without_ext[max(0, match_start-5):match_start].lower() or 
+                    '480' in name_without_ext[max(0, match_start-5):match_start].lower() or
                     found_num in [1080, 720, 480, 360, 240, 2160, 1440]):  # Common video resolutions
-                    pass  # Skip this match
+                    continue  # Skip this match
+                
                 # - Years (1900-2099) - unlikely in filenames but filter to be safe
                 elif 1900 <= found_num <= 2099:
                     # Check if it's actually part of a year pattern
                     year_context = name_without_ext[max(0, match_start-2):min(len(name_without_ext), match_end+2)]
                     if re.search(r'\b(19|20)\d{2}\b', year_context):
-                        pass  # Skip this match
+                        continue  # Skip this match
                     else:
                         # Not a clear year pattern, but still in year range - skip to be safe
-                        pass
+                        continue
+                
                 # - Only use if it seems reasonable (not 0, and reasonable episode range)
                 elif 1 <= found_num <= 300:  # Support up to 300 episodes per season
-                    episode_num = found_num
-                    return season_num, episode_num
+                    # Exclude the season number if we already detected it
+                    # This prevents season numbers from being selected as episode numbers
+                    if found_num == season_num and season_num != 1:
+                        continue  # Skip season number
+                    valid_matches.append((found_num, match, match_start))
             except (ValueError, IndexError):
-                pass
+                continue
+        
+        # Prefer numbers that appear later in the filename (more likely to be episode numbers)
+        # Also prefer smaller numbers when position is similar
+        if valid_matches:
+            # Calculate position as percentage of filename length (later = higher percentage)
+            filename_len = len(name_without_ext)
+            # Sort by: 1) later position in filename (higher percentage), 2) smaller number
+            # This ensures numbers at the end (like "07" in "红蜘蛛6欲海沉沦07") are preferred
+            valid_matches.sort(key=lambda x: (-x[2] / max(filename_len, 1), x[0]))
+            episode_num = valid_matches[0][0]
+            return season_num, episode_num, None
         
         # If no patterns worked, use position-based numbering
-        return season_num, position
+        return season_num, position, None
     
     def determine_folder_type(self, folder_path: Path) -> FolderType:
         """Determine if folder contains direct files or season subfolders"""
@@ -468,7 +641,7 @@ class MediaLibraryOrganizer:
         # For direct files, default to Season 1 unless we find clear season info
         # Try to extract season number from first file, but validate it
         first_file = video_files[0]
-        detected_season, _ = self.extract_episode_info(first_file.name)
+        detected_season, _, _ = self.extract_episode_info(first_file.name)
         
         # Only use detected season if it's reasonable (1-100), otherwise default to 1
         # This prevents false matches from codec names (H265), years (2001), etc.
@@ -481,7 +654,7 @@ class MediaLibraryOrganizer:
         episodes = []
         for i, video_file in enumerate(video_files, 1):
             # Try to extract episode info, use position as fallback
-            detected_season, detected_episode = self.extract_episode_info(video_file.name, i)
+            detected_season, detected_episode, end_episode = self.extract_episode_info(video_file.name, i)
             
             # Validate detected season - only use if reasonable
             if not (1 <= detected_season <= 100):
@@ -496,7 +669,8 @@ class MediaLibraryOrganizer:
                 show_name=show_name,
                 season_number=final_season,
                 episode_number=final_episode,
-                extension=video_file.suffix
+                extension=video_file.suffix,
+                end_episode_number=end_episode
             )
             episodes.append(episode)
             
@@ -545,7 +719,7 @@ class MediaLibraryOrganizer:
             # Check if files have more reliable season information
             file_seasons = []
             for video_file in video_files:
-                file_season, _ = self.extract_episode_info(video_file.name)
+                file_season, _, _ = self.extract_episode_info(video_file.name)
                 # Only consider reasonable season numbers (1-100)
                 if 1 < file_season <= 100:  # > 1 to avoid default season 1
                     file_seasons.append(file_season)
@@ -580,7 +754,7 @@ class MediaLibraryOrganizer:
             episodes = []
             for i, video_file in enumerate(video_files, 1):
                 # Extract episode info
-                file_season, episode_num = self.extract_episode_info(video_file.name, i)
+                file_season, episode_num, end_episode = self.extract_episode_info(video_file.name, i)
                 
                 # Use the determined season number, not the one from individual files
                 final_season = season_num
@@ -590,7 +764,8 @@ class MediaLibraryOrganizer:
                     show_name=show_name,
                     season_number=final_season,
                     episode_number=episode_num,
-                    extension=video_file.suffix
+                    extension=video_file.suffix,
+                    end_episode_number=end_episode
                 )
                 episodes.append(episode)
                 
@@ -618,7 +793,11 @@ class MediaLibraryOrganizer:
     def generate_emby_filename(self, episode: Episode) -> str:
         """Generate Emby-compatible filename"""
         season_str = f"S{episode.season_number:02d}"
-        episode_str = f"E{episode.episode_number:02d}"
+        if episode.end_episode_number:
+            # Multi-episode file: show range like S01E01-E02
+            episode_str = f"E{episode.episode_number:02d}-E{episode.end_episode_number:02d}"
+        else:
+            episode_str = f"E{episode.episode_number:02d}"
         
         # Clean show name for filename
         clean_show_name = re.sub(r'[<>:"/\\|?*]', '', episode.show_name)
