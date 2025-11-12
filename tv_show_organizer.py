@@ -89,24 +89,45 @@ class MediaLibraryOrganizer:
         r'[Ss](?:eason\s*)?(\d+)',  # Season 1, season 1, S1, etc.
         r'第([一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾\d]+)季',  # 第三季, 第1季
         r'([一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾]+)季',  # 三季
-        r'(\d+)',  # Fallback: any number
+        r'(\d+)\s*单元',  # 01单元, 1单元 (unit number - indicates season)
+        # Strict fallback: match standalone numbers (1-100) that aren't years or codec numbers
+        # Matches numbers at word boundaries, not part of larger numbers
+        r'(?:^|[^\d])([1-9]\d?)(?![0-9])(?:[^\d]|$)',  # Standalone 1-99 (not part of 100+)
     ]
     
     EPISODE_PATTERNS = [
+        r'[Ss](\d+)[Ee][Pp](\d+)',  # S01EP02, S01Ep02 format
         r'[Ss](\d+)[Ee](\d+)',  # S01E01 format
         r'[Ss](\d+)\.?[Ee](\d+)',  # S01.E01 format
         r'(\d+)[xX](\d+)',  # 1x01 format
         r'第([一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾\d]+)集',  # 第六十集, 第1集
         r'([一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾]+)集',  # 六十集
         r'[Ee](?:pisode\s*)?(\d+)',  # Episode 01, E01, etc. (season-less)
-        r'(?:^|\D)(\d{1,2})(?:\D|$)',  # Any 1-2 digit number (fallback)
+        r'(\d+)-(\d+)',  # 1-09 format (season-episode or episode with dash)
+        r'(?:^|\D)(\d{1,3})(?:\D|$)',  # Any 1-3 digit number (fallback, supports episodes > 99)
     ]
     
-    def __init__(self, input_dir: str, output_dir: str, dry_run: bool = False, verbose: bool = False):
+    def __init__(self, input_dir: str, output_dir: str, dry_run: bool = False, verbose: bool = False, log_dir: Optional[str] = None):
         self.input_dir = Path(input_dir).resolve()
         self.output_dir = Path(output_dir).resolve()
         self.dry_run = dry_run
         self.verbose = verbose
+        
+        # Setup log directory
+        if log_dir:
+            self.log_dir = Path(log_dir).resolve()
+        else:
+            self.log_dir = self.output_dir / "logs"
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Generate log file names with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_file = self.log_dir / f"tv_organizer_{timestamp}.log"
+        self.report_file = self.log_dir / f"tv_organizer_report_{timestamp}.html"
+        
+        # Execution tracking
+        self.start_time = datetime.now()
+        self.processed_shows = []  # Store details of processed shows
         
         # Setup logging
         self._setup_logging()
@@ -123,16 +144,17 @@ class MediaLibraryOrganizer:
         self.logger.info(f"Input Directory: {Colors.YELLOW}{self.input_dir}{Colors.RESET}")
         self.logger.info(f"Output Directory: {Colors.YELLOW}{self.output_dir}{Colors.RESET}")
         self.logger.info(f"Mode: {Colors.MAGENTA}{'DRY RUN' if dry_run else 'LIVE'}{Colors.RESET}")
+        self.logger.info(f"Log File: {Colors.CYAN}{self.log_file}{Colors.RESET}")
         
     def _setup_logging(self):
-        """Setup colored logging"""
+        """Setup colored logging with file handler"""
         self.logger = logging.getLogger('TVOrganizer')
         self.logger.setLevel(logging.DEBUG if self.verbose else logging.INFO)
         
         # Clear existing handlers
         self.logger.handlers.clear()
         
-        # Console handler
+        # Console handler with colored output
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.DEBUG if self.verbose else logging.INFO)
         
@@ -151,9 +173,20 @@ class MediaLibraryOrganizer:
                 record.levelname = f"{color}{record.levelname}{Colors.RESET}"
                 return super().format(record)
         
-        formatter = ColoredFormatter('%(levelname)s: %(message)s')
-        console_handler.setFormatter(formatter)
+        console_formatter = ColoredFormatter('%(levelname)s: %(message)s')
+        console_handler.setFormatter(console_formatter)
         self.logger.addHandler(console_handler)
+        
+        # File handler with detailed formatting (no ANSI colors)
+        file_handler = logging.FileHandler(self.log_file, encoding='utf-8')
+        file_handler.setLevel(logging.DEBUG)
+        
+        file_formatter = logging.Formatter(
+            '%(asctime)s | %(levelname)-8s | %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        file_handler.setFormatter(file_formatter)
+        self.logger.addHandler(file_handler)
     
     def is_video_file(self, file_path: Path) -> bool:
         """Check if file is a supported video file"""
@@ -217,16 +250,70 @@ class MediaLibraryOrganizer:
     
     def extract_season_number(self, text: str, fallback: int = 1) -> int:
         """Extract season number from text using regex patterns including Chinese"""
-        for pattern in self.SEASON_PATTERNS:
+        for pattern_idx, pattern in enumerate(self.SEASON_PATTERNS):
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
                 try:
                     matched_text = match.group(1)
                     # Try Chinese number parsing first
                     if re.search(r'[一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾]', matched_text):
-                        return self.parse_chinese_number(matched_text)
+                        season_num = self.parse_chinese_number(matched_text)
                     else:
-                        return int(matched_text)
+                        season_num = int(matched_text)
+                    
+                    # Get match position once
+                    match_start = match.start()
+                    match_end = match.end()
+                    
+                    # Filter out false positives:
+                    # - "全xx集" pattern (全21集, 全12集, etc.) - this indicates episode count, not season
+                    # Check if the number is within "全...集" context
+                    # Look for "全" before the match and "集" after the match within reasonable distance
+                    text_before_match = text[:match_start]
+                    text_after_match = text[match_end:]
+                    # Check if "全" appears before (within 10 chars) and "集" appears after (within 10 chars)
+                    if '全' in text_before_match[-10:] and '集' in text_after_match[:10]:
+                        # Verify this is actually a "全xx集" pattern by checking the context
+                        pattern_context = text[max(0, match_start-15):min(len(text), match_end+15)]
+                        # Match pattern like "全21集", "全 12 集", "全12集" etc.
+                        if re.search(r'全\s*' + re.escape(matched_text) + r'\s*集', pattern_context):
+                            continue
+                    
+                    # - Years (1900-2099) - check if this number is part of a year
+                    if 1900 <= season_num <= 2099:
+                        # Look for 4-digit year pattern around the match
+                        year_context = text[max(0, match_start-4):min(len(text), match_end+4)]
+                        if re.search(r'\b(19|20)\d{2}\b', year_context):
+                            continue
+                    
+                    # - Codec numbers (H264, H265, x264, x265, etc.) - check context
+                    # If the number is preceded by H, x, X, or followed by codec-related text, skip it
+                    context_before_upper = text[max(0, match_start-2):match_start].upper()
+                    context_after_upper = text[match_end:min(len(text), match_end+2)].upper()
+                    if (context_before_upper in ['H', 'X', '[H', '(H', '.H', '_H'] or 
+                        context_after_upper in ['4', '5', '6', '8'] or
+                        re.search(r'[HXx]26[45]', text, re.IGNORECASE)):
+                        continue
+                    
+                    # - For the fallback pattern (last pattern), be extra strict
+                    # Check if the number appears to be part of a larger number or year
+                    if pattern_idx == len(self.SEASON_PATTERNS) - 1:  # Last pattern (fallback)
+                        # Check if surrounded by digits (part of larger number)
+                        if match_start > 0 and text[match_start-1].isdigit():
+                            continue
+                        if match_end < len(text) and text[match_end].isdigit():
+                            continue
+                        # Check if it's the last digit of a 4-digit year (e.g., "7" in "2007")
+                        if match_start >= 3:
+                            year_candidate = text[match_start-3:match_end]
+                            if year_candidate.isdigit() and 1900 <= int(year_candidate) <= 2099:
+                                continue
+                    
+                    # - Unreasonably high season numbers (> 100)
+                    if season_num > 100:
+                        continue
+                    
+                    return season_num
                 except (ValueError, IndexError):
                     continue
         return fallback
@@ -236,9 +323,13 @@ class MediaLibraryOrganizer:
         season_num = 1
         episode_num = position
         
-        # Try S##E## format first
-        for pattern in self.EPISODE_PATTERNS[:3]:  # S##E##, S##.E##, ##x##
-            match = re.search(pattern, filename, re.IGNORECASE)
+        # Normalize filename: remove spaces between digits (e.g., "1 8" -> "18")
+        # This helps with filenames like "1 8.mp4" which should be episode 18
+        normalized_filename = re.sub(r'(\d)\s+(\d)', r'\1\2', filename)
+        
+        # Try S##E## format first (season-episode patterns)
+        for pattern in self.EPISODE_PATTERNS[:4]:  # S##EP##, S##E##, S##.E##, ##x##
+            match = re.search(pattern, normalized_filename, re.IGNORECASE)
             if match:
                 try:
                     if len(match.groups()) == 2:
@@ -249,8 +340,8 @@ class MediaLibraryOrganizer:
                     continue
         
         # Try Chinese episode patterns
-        for pattern in self.EPISODE_PATTERNS[3:5]:  # 第六十集, 六十集
-            match = re.search(pattern, filename, re.IGNORECASE)
+        for pattern in self.EPISODE_PATTERNS[4:6]:  # 第六十集, 六十集
+            match = re.search(pattern, normalized_filename, re.IGNORECASE)
             if match:
                 try:
                     matched_text = match.group(1)
@@ -264,8 +355,8 @@ class MediaLibraryOrganizer:
                     continue
         
         # Try explicit episode patterns (English)
-        episode_pattern = self.EPISODE_PATTERNS[5]  # r'[Ee](?:pisode\s*)?(\d+)'
-        match = re.search(episode_pattern, filename, re.IGNORECASE)
+        episode_pattern = self.EPISODE_PATTERNS[6]  # r'[Ee](?:pisode\s*)?(\d+)'
+        match = re.search(episode_pattern, normalized_filename, re.IGNORECASE)
         if match:
             try:
                 episode_num = int(match.group(1))
@@ -273,16 +364,62 @@ class MediaLibraryOrganizer:
             except (ValueError, IndexError):
                 pass
         
+        # Try dash-separated pattern (e.g., 1-09, 10-20)
+        # This is typically just episode number with dash separator
+        # For cases like "红蜘蛛1-09.mp4", extract episode 9
+        dash_pattern = self.EPISODE_PATTERNS[7]  # r'(\d+)-(\d+)'
+        match = re.search(dash_pattern, normalized_filename, re.IGNORECASE)
+        if match:
+            try:
+                first_num = int(match.group(1))
+                second_num = int(match.group(2))
+                # Check if there's a season indicator before the dash (e.g., "S1-09")
+                match_start = match.start()
+                context_before = normalized_filename[max(0, match_start-2):match_start].upper()
+                # If preceded by 'S' or 'SEASON', treat as season-episode
+                if 'S' in context_before or 'SEASON' in normalized_filename[max(0, match_start-10):match_start].upper():
+                    if 1 <= first_num <= 100:  # Reasonable season number
+                        season_num = first_num
+                        episode_num = second_num
+                    else:
+                        episode_num = second_num
+                else:
+                    # No season indicator, treat as episode only (e.g., "1-09" = episode 9)
+                    episode_num = second_num
+                return season_num, episode_num
+            except (ValueError, IndexError):
+                pass
+        
         # Try numeric fallback pattern, but avoid file extensions
         # Remove file extension before trying numeric patterns
-        name_without_ext = filename.rsplit('.', 1)[0] if '.' in filename else filename
-        number_pattern = self.EPISODE_PATTERNS[6]  # r'(?:^|\D)(\d{1,2})(?:\D|$)'
+        name_without_ext = normalized_filename.rsplit('.', 1)[0] if '.' in normalized_filename else normalized_filename
+        number_pattern = self.EPISODE_PATTERNS[8]  # r'(?:^|\D)(\d{1,3})(?:\D|$)' 
         match = re.search(number_pattern, name_without_ext, re.IGNORECASE)
         if match:
             try:
                 found_num = int(match.group(1))
-                # Only use if it seems reasonable (not 0, and not too high)
-                if 1 <= found_num <= 99:
+                match_start = match.start()
+                match_end = match.end()
+                
+                # Filter out false positives:
+                # - Video resolutions (1080, 720, 480, etc.) - check if followed by 'p', 'i', or preceded by resolution context
+                context_after = name_without_ext[match_end:min(len(name_without_ext), match_end+2)].lower()
+                context_before = name_without_ext[max(0, match_start-5):match_start].lower()
+                if (context_after in ['p', 'i'] or 
+                    '1080' in context_before or '720' in context_before or '480' in context_before or
+                    found_num in [1080, 720, 480, 360, 240, 2160, 1440]):  # Common video resolutions
+                    pass  # Skip this match
+                # - Years (1900-2099) - unlikely in filenames but filter to be safe
+                elif 1900 <= found_num <= 2099:
+                    # Check if it's actually part of a year pattern
+                    year_context = name_without_ext[max(0, match_start-2):min(len(name_without_ext), match_end+2)]
+                    if re.search(r'\b(19|20)\d{2}\b', year_context):
+                        pass  # Skip this match
+                    else:
+                        # Not a clear year pattern, but still in year range - skip to be safe
+                        pass
+                # - Only use if it seems reasonable (not 0, and reasonable episode range)
+                elif 1 <= found_num <= 300:  # Support up to 300 episodes per season
                     episode_num = found_num
                     return season_num, episode_num
             except (ValueError, IndexError):
@@ -322,14 +459,27 @@ class MediaLibraryOrganizer:
         
         self.logger.info(f"Processing show: {Colors.CYAN}{show_name}{Colors.RESET} (Direct Files)")
         
-        # Try to extract season number from first file, fallback to 1
+        # For direct files, default to Season 1 unless we find clear season info
+        # Try to extract season number from first file, but validate it
         first_file = video_files[0]
-        season_num, _ = self.extract_episode_info(first_file.name)
+        detected_season, _ = self.extract_episode_info(first_file.name)
+        
+        # Only use detected season if it's reasonable (1-100), otherwise default to 1
+        # This prevents false matches from codec names (H265), years (2001), etc.
+        if 1 <= detected_season <= 100:
+            season_num = detected_season
+        else:
+            season_num = 1
+            self.logger.debug(f"  Detected season {detected_season} seems invalid, defaulting to Season 1")
         
         episodes = []
         for i, video_file in enumerate(video_files, 1):
             # Try to extract episode info, use position as fallback
             detected_season, detected_episode = self.extract_episode_info(video_file.name, i)
+            
+            # Validate detected season - only use if reasonable
+            if not (1 <= detected_season <= 100):
+                detected_season = season_num
             
             # Use detected season if consistent, otherwise use first file's season
             final_season = detected_season if detected_season == season_num else season_num
@@ -381,11 +531,17 @@ class MediaLibraryOrganizer:
             # Extract season number from folder name (initial attempt)
             folder_season = self.extract_season_number(subdir.name, None)
             
+            # Validate folder_season - filter out unreasonable values
+            if folder_season and not (1 <= folder_season <= 100):
+                self.logger.debug(f"    Ignoring invalid season {folder_season} from folder name")
+                folder_season = None
+            
             # Check if files have more reliable season information
             file_seasons = []
             for video_file in video_files:
                 file_season, _ = self.extract_episode_info(video_file.name)
-                if file_season > 1:  # Only consider if we got a meaningful season number
+                # Only consider reasonable season numbers (1-100)
+                if 1 < file_season <= 100:  # > 1 to avoid default season 1
                     file_seasons.append(file_season)
             
             # Determine the most reliable season number
@@ -467,11 +623,22 @@ class MediaLibraryOrganizer:
         """Organize a TV show into Emby format"""
         try:
             show_output_dir = self.output_dir / tv_show.name
+            show_details = {
+                'name': tv_show.name,
+                'folder_type': tv_show.folder_type.value,
+                'original_folder': str(tv_show.original_folder),
+                'seasons': []
+            }
             
             for season in tv_show.seasons:
                 season_dir = show_output_dir / f"Season {season.season_number}"
 
                 self.logger.info(f"  Organizing Season {season.season_number} -> {Colors.GREEN}{season_dir.relative_to(self.output_dir)}{Colors.RESET}")
+                
+                season_details = {
+                    'season_number': season.season_number,
+                    'episodes': []
+                }
                 
                 # Create season directory
                 if not self.dry_run:
@@ -485,6 +652,15 @@ class MediaLibraryOrganizer:
                     self.logger.info(f"    {Colors.YELLOW}Moving:{Colors.RESET} {episode.original_path.name}")
                     self.logger.info(f"    {Colors.GREEN}To:{Colors.RESET} {new_path.relative_to(self.output_dir)}")
                     
+                    episode_details = {
+                        'episode_number': episode.episode_number,
+                        'original_file': episode.original_path.name,
+                        'original_path': str(episode.original_path),
+                        'new_file': new_filename,
+                        'new_path': str(new_path.relative_to(self.output_dir)),
+                        'status': 'pending'
+                    }
+                    
                     # Move the file
                     if not self.dry_run:
                         try:
@@ -494,17 +670,25 @@ class MediaLibraryOrganizer:
                             # Move (rename) the file
                             shutil.move(str(episode.original_path), str(new_path))
                             self.stats['episodes_moved'] += 1
+                            episode_details['status'] = 'moved'
                             
                         except Exception as e:
                             self.logger.error(f"Failed to move {episode.original_path}: {e}")
                             self.stats['errors'] += 1
+                            episode_details['status'] = 'error'
+                            episode_details['error'] = str(e)
                             return False
                     else:
                         self.stats['episodes_moved'] += 1
+                        episode_details['status'] = 'dry_run'
+                    
+                    season_details['episodes'].append(episode_details)
                 
+                show_details['seasons'].append(season_details)
                 self.stats['seasons_processed'] += 1
             
             self.stats['shows_processed'] += 1
+            self.processed_shows.append(show_details)
             return True
             
         except Exception as e:
@@ -563,6 +747,9 @@ class MediaLibraryOrganizer:
     
     def print_summary(self):
         """Print operation summary"""
+        self.end_time = datetime.now()
+        duration = self.end_time - self.start_time
+        
         self.logger.info(f"\n{Colors.BOLD}{'='*60}{Colors.RESET}")
         self.logger.info(f"{Colors.BOLD}OPERATION SUMMARY{Colors.RESET}")
         self.logger.info(f"{Colors.BOLD}{'='*60}{Colors.RESET}")
@@ -576,9 +763,311 @@ class MediaLibraryOrganizer:
         else:
             self.logger.info(f"Errors: {Colors.GREEN}0{Colors.RESET}")
         
+        self.logger.info(f"Duration: {Colors.CYAN}{duration}{Colors.RESET}")
+        
         if self.dry_run:
             self.logger.info(f"\n{Colors.YELLOW}This was a DRY RUN - no files were actually moved.{Colors.RESET}")
             self.logger.info(f"{Colors.YELLOW}Remove --dry-run flag to perform actual organization.{Colors.RESET}")
+        
+        # Generate HTML report
+        self.generate_html_report(duration)
+        self.logger.info(f"\n{Colors.CYAN}Report saved to: {self.report_file}{Colors.RESET}")
+    
+    def generate_html_report(self, duration):
+        """Generate a pretty HTML report of the execution"""
+        html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TV Show Organizer Report</title>
+    <style>
+        * {{
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #e0e0e0;
+            background: #121212;
+            padding: 20px;
+        }}
+        .container {{
+            max-width: 1200px;
+            margin: 0 auto;
+            background: #1e1e1e;
+            border-radius: 8px;
+            box-shadow: 0 2px 20px rgba(0,0,0,0.5);
+            padding: 30px;
+        }}
+        h1 {{
+            color: #ffffff;
+            border-bottom: 3px solid #5dade2;
+            padding-bottom: 10px;
+            margin-bottom: 30px;
+        }}
+        h2 {{
+            color: #b0b0b0;
+            margin-top: 30px;
+            margin-bottom: 15px;
+            border-left: 4px solid #5dade2;
+            padding-left: 15px;
+        }}
+        .summary-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }}
+        .summary-card {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+        }}
+        .summary-card.error {{
+            background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+            box-shadow: 0 4px 15px rgba(231, 76, 60, 0.3);
+        }}
+        .summary-card.success {{
+            background: linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+            box-shadow: 0 4px 15px rgba(52, 152, 219, 0.3);
+        }}
+        .summary-card h3 {{
+            font-size: 14px;
+            opacity: 0.9;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }}
+        .summary-card .value {{
+            font-size: 36px;
+            font-weight: bold;
+        }}
+        .info-section {{
+            background: #2a2a2a;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+            border: 1px solid #3a3a3a;
+        }}
+        .info-section p {{
+            margin: 5px 0;
+            color: #d0d0d0;
+        }}
+        .info-section strong {{
+            color: #ffffff;
+        }}
+        .info-section code {{
+            background: #1a1a1a;
+            color: #5dade2;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.9em;
+        }}
+        .show-card {{
+            border: 1px solid #3a3a3a;
+            border-radius: 5px;
+            margin: 20px 0;
+            overflow: hidden;
+            background: #252525;
+        }}
+        .show-header {{
+            background: linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+            color: white;
+            padding: 15px;
+            font-weight: bold;
+            font-size: 18px;
+        }}
+        .show-body {{
+            padding: 15px;
+            background: #252525;
+            color: #e0e0e0;
+        }}
+        .show-body code {{
+            background: #1a1a1a;
+            color: #5dade2;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.9em;
+        }}
+        .season-section {{
+            margin: 15px 0;
+            padding: 10px;
+            background: #2a2a2a;
+            border-radius: 5px;
+            border: 1px solid #3a3a3a;
+        }}
+        .season-title {{
+            font-weight: bold;
+            color: #ffffff;
+            margin-bottom: 10px;
+        }}
+        .episode-list {{
+            list-style: none;
+            margin-left: 20px;
+        }}
+        .episode-item {{
+            padding: 8px;
+            margin: 5px 0;
+            background: #1e1e1e;
+            border-left: 3px solid #5dade2;
+            border-radius: 3px;
+            color: #e0e0e0;
+        }}
+        .episode-item.error {{
+            border-left-color: #e74c3c;
+            background: #2a1a1a;
+        }}
+        .episode-item.dry-run {{
+            border-left-color: #f39c12;
+            background: #2a241a;
+        }}
+        .file-path {{
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: #888;
+            margin-top: 5px;
+        }}
+        .status-badge {{
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: bold;
+            margin-left: 10px;
+        }}
+        .status-moved {{
+            background: #27ae60;
+            color: #ffffff;
+        }}
+        .status-error {{
+            background: #e74c3c;
+            color: #ffffff;
+        }}
+        .status-dry-run {{
+            background: #f39c12;
+            color: #ffffff;
+        }}
+        .footer {{
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 2px solid #3a3a3a;
+            text-align: center;
+            color: #888;
+            font-size: 14px;
+        }}
+        .footer code {{
+            background: #1a1a1a;
+            color: #5dade2;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.9em;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📺 TV Show Organizer Execution Report</h1>
+        
+        <div class="summary-grid">
+            <div class="summary-card success">
+                <h3>Shows Processed</h3>
+                <div class="value">{self.stats['shows_processed']}</div>
+            </div>
+            <div class="summary-card success">
+                <h3>Seasons Processed</h3>
+                <div class="value">{self.stats['seasons_processed']}</div>
+            </div>
+            <div class="summary-card success">
+                <h3>Episodes Moved</h3>
+                <div class="value">{self.stats['episodes_moved']}</div>
+            </div>
+            <div class="summary-card {'error' if self.stats['errors'] > 0 else 'success'}">
+                <h3>Errors</h3>
+                <div class="value">{self.stats['errors']}</div>
+            </div>
+        </div>
+        
+        <h2>Execution Information</h2>
+        <div class="info-section">
+            <p><strong>Start Time:</strong> {self.start_time.strftime('%Y-%m-%d %H:%M:%S')}</p>
+            <p><strong>End Time:</strong> {self.end_time.strftime('%Y-%m-%d %H:%M:%S')}</p>
+            <p><strong>Duration:</strong> {str(duration).split('.')[0]}</p>
+            <p><strong>Mode:</strong> {'<span style="color: #f39c12; font-weight: bold;">DRY RUN</span>' if self.dry_run else '<span style="color: #27ae60; font-weight: bold;">LIVE</span>'}</p>
+            <p><strong>Input Directory:</strong> <code>{self.input_dir}</code></p>
+            <p><strong>Output Directory:</strong> <code>{self.output_dir}</code></p>
+            <p><strong>Log File:</strong> <code>{self.log_file}</code></p>
+        </div>
+        
+        <h2>Processed Shows</h2>
+"""
+        
+        if self.processed_shows:
+            for show in self.processed_shows:
+                html_content += f"""
+        <div class="show-card">
+            <div class="show-header">
+                {show['name']} <span style="font-size: 12px; opacity: 0.9;">({show['folder_type']})</span>
+            </div>
+            <div class="show-body">
+                <p><strong>Original Folder:</strong> <code>{show['original_folder']}</code></p>
+"""
+                for season in show['seasons']:
+                    html_content += f"""
+                <div class="season-section">
+                    <div class="season-title">Season {season['season_number']:02d} ({len(season['episodes'])} episodes)</div>
+                    <ul class="episode-list">
+"""
+                    for episode in season['episodes']:
+                        status_class = episode['status']
+                        status_text = episode['status'].replace('_', ' ').title()
+                        html_content += f"""
+                        <li class="episode-item {status_class}">
+                            <strong>{episode['new_file']}</strong>
+                            <span class="status-badge status-{episode['status']}">{status_text}</span>
+                            <div class="file-path">From: {episode['original_file']}</div>
+                            <div class="file-path">To: {episode['new_path']}</div>
+"""
+                        if episode.get('error'):
+                            html_content += f"""
+                            <div class="file-path" style="color: #ff6b6b;">Error: {episode['error']}</div>
+"""
+                        html_content += """
+                        </li>
+"""
+                    html_content += """
+                    </ul>
+                </div>
+"""
+                html_content += """
+            </div>
+        </div>
+"""
+        else:
+            html_content += """
+        <p style="color: #888; font-style: italic;">No shows were processed.</p>
+"""
+        
+        html_content += f"""
+        <div class="footer">
+            <p>Generated by TV Show Organizer on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+            <p>Report saved to: <code>{self.report_file}</code></p>
+        </div>
+    </div>
+</body>
+</html>
+"""
+        
+        try:
+            with open(self.report_file, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+        except Exception as e:
+            self.logger.error(f"Failed to generate HTML report: {e}")
 
 def main():
     """Main entry point"""
@@ -597,6 +1086,7 @@ Examples:
     parser.add_argument('output_dir', help='Output directory for organized TV shows')
     parser.add_argument('--dry-run', action='store_true', help='Preview changes without moving files')
     parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose logging')
+    parser.add_argument('--log-dir', help='Directory to save log files (default: output_dir/logs)')
     parser.add_argument('--version', action='version', version='%(prog)s 1.0.0')
     
     args = parser.parse_args()
@@ -606,7 +1096,8 @@ Examples:
             input_dir=args.input_dir,
             output_dir=args.output_dir,
             dry_run=args.dry_run,
-            verbose=args.verbose
+            verbose=args.verbose,
+            log_dir=args.log_dir
         )
         
         success = organizer.scan_and_organize()
