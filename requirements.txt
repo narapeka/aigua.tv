@@ -1,0 +1,23 @@
+# TV Show Media Library Organizer Requirements
+# No external dependencies required - uses Python standard library only!
+
+# Python 3.6+ required for:
+# - pathlib (Path objects)
+# - f-strings
+# - dataclasses (Python 3.7+, or use typing.NamedTuple for 3.6)
+# - enum.Enum
+
+# Optional: For development/testing
+# pytest>=6.0.0
+# black>=21.0.0
+# flake8>=3.8.0
+
+# Note: This tool is designed to work with minimal dependencies
+# All core functionality uses only Python standard library modules:
+# - os, pathlib - file system operations
+# - re - regular expressions for pattern matching
+# - shutil - file moving operations
+# - argparse - command line interface
+# - logging - colored output and progress tracking
+# - typing, dataclasses, enum - type hints and data structures
+# - json, datetime - utility functions
