@@ -73,8 +73,14 @@ class TVShow:
 class MediaLibraryOrganizer:
     """Main class for organizing TV show media library"""
     
-    # Supported video file extensions
-    VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.ts', '.m2ts'}
+    # Supported media file extensions (video + subtitles)
+    # Subtitle files are included so they go through the same episode/season detection logic
+    MEDIA_EXTENSIONS = {
+        # Video formats
+        '.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.ts', '.m2ts',
+        # Subtitle formats
+        '.srt', '.ass', '.ssa', '.vtt', '.sub', '.idx', '.sup', '.pgs'
+    }
     
     # Chinese numeral mappings
     CHINESE_NUMERALS = {
@@ -189,11 +195,11 @@ class MediaLibraryOrganizer:
         self.logger.addHandler(file_handler)
     
     def is_video_file(self, file_path: Path) -> bool:
-        """Check if file is a supported video file"""
-        return file_path.suffix.lower() in self.VIDEO_EXTENSIONS
+        """Check if file is a supported media file (video or subtitle)"""
+        return file_path.suffix.lower() in self.MEDIA_EXTENSIONS
     
     def get_video_files(self, directory: Path) -> List[Path]:
-        """Get all video files in a directory"""
+        """Get all media files (video + subtitles) in a directory"""
         if not directory.exists() or not directory.is_dir():
             return []
         
