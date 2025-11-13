@@ -1,5 +1,9 @@
 # TV Show Media Library Organizer Requirements
-# No external dependencies required - uses Python standard library only!
+
+# Core dependencies
+openai>=1.0.0  # Required for agent.py LLM functionality
+pyyaml>=6.0.0  # Required for config.py YAML configuration loading
+tmdbv3api>=2.0.0  # Required for tmdb.py TMDB API integration
 
 # Python 3.6+ required for:
 # - pathlib (Path objects)
@@ -12,8 +16,7 @@
 # black>=21.0.0
 # flake8>=3.8.0
 
-# Note: This tool is designed to work with minimal dependencies
-# All core functionality uses only Python standard library modules:
+# Note: Core organizer functionality uses only Python standard library modules:
 # - os, pathlib - file system operations
 # - re - regular expressions for pattern matching
 # - shutil - file moving operations

@@ -1,0 +1,6 @@
+Extract TV show information from these folder names:
+
+{folder_list}
+
+Return a JSON array with the extracted information for each folder.
+
