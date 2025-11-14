@@ -36,6 +36,7 @@ def test_agent_initialization():
             base_url=config.llm.base_url,
             model=config.llm.model,
             batch_size=config.llm.batch_size,
+            rate_limit=config.llm.rate_limit,
             logger=logger
         )
         
@@ -44,6 +45,7 @@ def test_agent_initialization():
         print(f"  Base URL: {config.llm.base_url or 'OpenAI default'}")
         print(f"  Model: {config.llm.model}")
         print(f"  Batch Size: {config.llm.batch_size}")
+        print(f"  Rate Limit: {config.llm.rate_limit} requests/second")
         print(f"  System Prompt: {len(agent.system_prompt)} characters")
         print(f"  User Prompt Template: {len(agent.user_prompt_template)} characters")
         

@@ -20,6 +20,7 @@ class LLMConfig:
     base_url: Optional[str]
     model: str
     batch_size: int
+    rate_limit: int = 2
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'LLMConfig':
@@ -35,11 +36,22 @@ class LLMConfig:
         if base_url == '' or base_url == 'null':
             base_url = None
         
+        # Get rate_limit, convert to int and handle both old and new key names for backward compatibility
+        rate_limit = data.get('rate_limit')
+        if rate_limit is None:
+            # Try old key name for backward compatibility
+            rate_limit = data.get('max_requests_per_second', 2)
+        if isinstance(rate_limit, float):
+            rate_limit = int(rate_limit)
+        elif not isinstance(rate_limit, int):
+            rate_limit = 2  # Default fallback
+        
         return cls(
             api_key=api_key,
             base_url=base_url,
             model=data.get('model', 'gpt-4o-mini'),
-            batch_size=data.get('batch_size', 50)
+            batch_size=data.get('batch_size', 50),
+            rate_limit=rate_limit
         )
 
 
@@ -66,6 +78,7 @@ class TMDBConfig:
     """TMDB API configuration"""
     api_key: str
     languages: List[str] = None
+    rate_limit: int = 40
     
     def __post_init__(self):
         """Set default languages if not provided"""
@@ -91,9 +104,17 @@ class TMDBConfig:
         if not isinstance(languages, list):
             languages = ["zh-CN", "zh-SG", "zh-TW", "zh-HK"]
         
+        # Get rate_limit, convert to int
+        rate_limit = data.get('rate_limit', 40)
+        if isinstance(rate_limit, float):
+            rate_limit = int(rate_limit)
+        elif not isinstance(rate_limit, int):
+            rate_limit = 40  # Default fallback
+        
         return cls(
             api_key=api_key,
-            languages=languages
+            languages=languages,
+            rate_limit=rate_limit
         )
 
 

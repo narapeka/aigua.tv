@@ -34,6 +34,7 @@ def test_tmdb_client_initialization():
         print(f"  API Key: {config.tmdb.api_key[:10]}...")
         print(f"  Languages: {config.tmdb.languages}")
         print(f"  Default Language: {config.tmdb.language}")
+        print(f"  Rate Limit: {config.tmdb.rate_limit} requests/second")
         if config.proxy:
             print(f"  Proxy: {config.proxy.host}:{config.proxy.port}")
         else:

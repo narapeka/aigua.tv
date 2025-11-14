@@ -13,6 +13,7 @@ Author: Kilo Code
 
 import json
 import logging
+import time
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass, asdict
@@ -42,6 +43,7 @@ class LLMAgent:
         base_url: Optional[str] = None,
         model: str = "gpt-4o-mini",
         batch_size: int = 50,
+        rate_limit: int = 2,
         logger: Optional[logging.Logger] = None
     ):
         """
@@ -52,12 +54,16 @@ class LLMAgent:
             base_url: Base URL for the API (None for OpenAI default)
             model: Model name to use (e.g., "gpt-4o-mini", "gpt-4", "gemini-pro", "grok-beta")
             batch_size: Maximum number of folders to process in a single LLM request
+            rate_limit: Maximum number of requests allowed per second (default: 2)
             logger: Optional logger instance
         """
         self.api_key = api_key
         self.base_url = base_url
         self.model = model
         self.batch_size = batch_size
+        self.rate_limit = rate_limit
+        self.min_request_interval = 1.0 / rate_limit  # Minimum seconds between requests
+        self.last_request_time = 0.0  # Track last request time for rate limiting
         self.logger = logger or logging.getLogger(__name__)
         
         # Initialize OpenAI client (works with OpenAI-compatible APIs)
@@ -91,6 +97,21 @@ class LLMAgent:
                 f"User prompt file not found: {user_prompt_path}\n"
                 f"Please create prompts/user_prompt.txt"
             )
+    
+    def _wait_for_rate_limit(self):
+        """
+        Enforce rate limiting by waiting if necessary before making a request.
+        Ensures we don't exceed rate_limit requests per second.
+        """
+        current_time = time.time()
+        time_since_last_request = current_time - self.last_request_time
+        
+        if time_since_last_request < self.min_request_interval:
+            wait_time = self.min_request_interval - time_since_last_request
+            self.logger.debug(f"Rate limiting: waiting {wait_time:.3f} seconds before next request")
+            time.sleep(wait_time)
+        
+        self.last_request_time = time.time()
     
     def _create_extraction_prompt(self, folder_names: List[str]) -> str:
         """Create prompt for extracting TV show information"""
@@ -219,6 +240,9 @@ class LLMAgent:
             self.logger.debug(f"Processing chunk {chunk_num}/{total_chunks} ({len(chunk)} folders)")
             
             try:
+                # Enforce rate limiting before making the API request
+                self._wait_for_rate_limit()
+                
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[

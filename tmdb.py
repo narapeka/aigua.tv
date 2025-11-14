@@ -8,6 +8,7 @@ Author: Kilo Code
 
 import logging
 import re
+import time
 from typing import Optional, List, Dict, Any, Tuple, Union
 from dataclasses import dataclass
 from tmdbv3api import TMDb, TV, Season as TMDBSeason, Episode as TMDBEpisode
@@ -107,6 +108,7 @@ class TMDBClient:
         languages: Optional[List[str]] = None,
         proxy_host: Optional[str] = None,
         proxy_port: Optional[int] = None,
+        rate_limit: int = 40,
         logger: Optional[logging.Logger] = None
     ):
         """
@@ -117,12 +119,16 @@ class TMDBClient:
             languages: List of languages to try when searching (default: ["zh-CN", "zh-SG", "zh-TW", "zh-HK"])
             proxy_host: Proxy host with protocol (e.g., "http://proxy.example.com")
             proxy_port: Proxy port
+            rate_limit: Maximum number of requests allowed per second (default: 40)
             logger: Optional logger instance
         """
         self.api_key = api_key
         self.languages = languages or ["zh-CN", "zh-SG", "zh-TW", "zh-HK"]
         # Derive language from first item in languages
         self.language = self.languages[0] if self.languages else "en-US"
+        self.rate_limit = rate_limit
+        self.min_request_interval = 1.0 / rate_limit  # Minimum seconds between requests
+        self.last_request_time = 0.0  # Track last request time for rate limiting
         self.logger = logger or logging.getLogger(__name__)
         
         # Initialize TMDB client
@@ -159,6 +165,21 @@ class TMDBClient:
         self.season = TMDBSeason()
         self.episode = TMDBEpisode()
     
+    def _wait_for_rate_limit(self):
+        """
+        Enforce rate limiting by waiting if necessary before making a request.
+        Ensures we don't exceed rate_limit requests per second.
+        """
+        current_time = time.time()
+        time_since_last_request = current_time - self.last_request_time
+        
+        if time_since_last_request < self.min_request_interval:
+            wait_time = self.min_request_interval - time_since_last_request
+            self.logger.debug(f"Rate limiting: waiting {wait_time:.3f} seconds before next request")
+            time.sleep(wait_time)
+        
+        self.last_request_time = time.time()
+    
     def search_tv_show(self, query: str, year: Optional[int] = None) -> List[TVShowMetadata]:
         """
         Search for TV shows by name
@@ -172,6 +193,9 @@ class TMDBClient:
         """
         try:
             self.logger.debug(f"Searching TMDB for TV show: {query}" + (f" (year: {year})" if year else ""))
+            
+            # Enforce rate limiting before making the API request
+            self._wait_for_rate_limit()
             
             results = self.tv.search(query)
             
@@ -216,6 +240,9 @@ class TMDBClient:
         """
         try:
             self.logger.debug(f"Fetching TMDB details for TV show ID: {tv_id}")
+            
+            # Enforce rate limiting before making the API request
+            self._wait_for_rate_limit()
             
             details = self.tv.details(tv_id)
             
@@ -459,6 +486,9 @@ class TMDBClient:
                 self.tmdb.language = lang
                 self.logger.debug(f"Searching TMDB for '{query}' with language {lang}" + (f" (year: {year})" if year else ""))
                 
+                # Enforce rate limiting before making the API request
+                self._wait_for_rate_limit()
+                
                 results = self.tv.search(query)
                 
                 if not results:
@@ -506,12 +536,16 @@ class TMDBClient:
         """
         try:
             # Get basic details
+            # Enforce rate limiting before making the API request
+            self._wait_for_rate_limit()
             details = self.tv.details(tv_id)
             if not details:
                 return None
             
             # Get alternative titles
             try:
+                # Enforce rate limiting before making the API request
+                self._wait_for_rate_limit()
                 alt_titles = self.tv.alternative_titles(tv_id)
                 details['alternative_titles'] = alt_titles
             except Exception as e:
@@ -520,6 +554,8 @@ class TMDBClient:
             
             # Get translations
             try:
+                # Enforce rate limiting before making the API request
+                self._wait_for_rate_limit()
                 translations = self.tv.translations(tv_id)
                 details['translations'] = translations
             except Exception as e:
@@ -640,6 +676,8 @@ class TMDBClient:
             self.tmdb.language = language
             
             # Get TV show details to know number of seasons
+            # Enforce rate limiting before making the API request
+            self._wait_for_rate_limit()
             details = self.tv.details(tv_id)
             if not details:
                 return []
@@ -648,6 +686,8 @@ class TMDBClient:
             
             for season_num in range(1, num_seasons + 1):
                 try:
+                    # Enforce rate limiting before making the API request
+                    self._wait_for_rate_limit()
                     season_details = self.season.details(tv_id, season_num)
                     if not season_details:
                         continue
@@ -753,6 +793,8 @@ class TMDBClient:
                     original_lang = self.tmdb.language
                     try:
                         self.tmdb.language = search_language
+                        # Enforce rate limiting before making the API request
+                        self._wait_for_rate_limit()
                         all_results = self.tv.search(cn_name)
                         if year:
                             all_results = [r for r in all_results if r.get('first_air_date') and r['first_air_date'].startswith(str(year))]
@@ -772,6 +814,8 @@ class TMDBClient:
                         original_lang = self.tmdb.language
                         try:
                             self.tmdb.language = search_language
+                            # Enforce rate limiting before making the API request
+                            self._wait_for_rate_limit()
                             all_results = self.tv.search(cn_name)
                             all_results_count = len(all_results) if all_results else 1
                         except:
@@ -802,6 +846,8 @@ class TMDBClient:
                             original_lang = self.tmdb.language
                             try:
                                 self.tmdb.language = search_language
+                                # Enforce rate limiting before making the API request
+                                self._wait_for_rate_limit()
                                 all_results = self.tv.search(search_name)
                                 all_results_count = len(all_results) if all_results else 1
                             except:
@@ -922,6 +968,7 @@ def create_tmdb_client_from_config(config: Any, logger: Optional[logging.Logger]
         languages=tmdb_config.languages,
         proxy_host=proxy_host,
         proxy_port=proxy_port,
+        rate_limit=tmdb_config.rate_limit,
         logger=logger
     )
 
