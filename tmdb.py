@@ -575,7 +575,9 @@ class TMDBClient:
         input_name: Optional[str],
         input_year: Optional[int],
         all_results_count: int,
-        tmdb_info: Dict[str, Any]
+        tmdb_info: Dict[str, Any],
+        folder_type: Optional[str] = None,
+        detected_season: Optional[int] = None
     ) -> str:
         """
         Check match confidence based on various criteria
@@ -587,6 +589,8 @@ class TMDBClient:
             input_year: Input year used for search (from LLM extraction)
             all_results_count: Total number of results from search
             tmdb_info: Full TMDB info including alternative_titles and translations
+            folder_type: Folder type - "direct_files" or "season_subfolders" (optional)
+            detected_season: Detected season number (optional)
             
         Returns:
             Confidence level: "high", "medium", "low", or None
@@ -599,33 +603,25 @@ class TMDBClient:
         self.logger.debug(f"  Total search results: {all_results_count}")
         
         # Check year mismatch first - if years don't match, downgrade to low confidence
-        if input_year and result.year:
-            if input_year != result.year:
-                self.logger.warning(f"  → Confidence: LOW (year mismatch: LLM year={input_year}, TMDB year={result.year})")
+        # EXCEPTION: For season > 1 in direct_files, skip year check here (will validate season year later)
+        skip_year_check = (folder_type == "direct_files" and detected_season and detected_season > 1)
+        
+        if skip_year_check:
+            self.logger.debug(f"  Skipping year mismatch check (season {detected_season} > 1, will validate season year later)")
+        elif input_year and result.year:
+            year_diff = abs(input_year - result.year)
+            if year_diff == 0:
+                self.logger.debug(f"  Year match confirmed: {input_year} == {result.year}")
+            elif year_diff == 1:
+                # Allow ±1 year tolerance (shows often air across year boundaries)
+                self.logger.debug(f"  Year difference of 1 year allowed (LLM year={input_year}, TMDB year={result.year})")
+            else:
+                # Year difference > 1, downgrade to low confidence
+                self.logger.warning(f"  → Confidence: LOW (year mismatch: LLM year={input_year}, TMDB year={result.year}, diff={year_diff})")
                 return "low"
-            self.logger.debug(f"  Year match confirmed: {input_year} == {result.year}")
-        
-        # If single result and year matches (or no year provided), it's high confidence
-        if all_results_count == 1:
-            self.logger.info(f"  → Confidence: HIGH (single result returned, year matches)")
-            return "high"
-        
-        self.logger.debug(f"  Multiple results ({all_results_count}), checking for exact matches...")
-        
-        # Check exact name and year match
-        if input_year and result.year:
-            self.logger.debug(f"  Comparing years: input={input_year}, result={result.year}")
-            if result.name == input_name and result.year == input_year:
-                self.logger.info(f"  → Confidence: HIGH (exact name and year match: '{result.name}' == '{input_name}', {result.year} == {input_year})")
-                return "high"
-            if result.original_name == input_name and result.year == input_year:
-                self.logger.info(f"  → Confidence: HIGH (exact original name and year match: '{result.original_name}' == '{input_name}', {result.year} == {input_year})")
-                return "high"
-            self.logger.debug(f"  No exact name+year match found")
-        else:
-            self.logger.debug(f"  Year comparison skipped (input_year={input_year}, result.year={result.year})")
         
         # Extract alternative names and check if any match folder_name
+        # IMPORTANT: Always validate against folder_name, even for single results
         self.logger.debug(f"  Extracting alternative names from TMDB data...")
         ret_names = self._extract_alternative_names(tmdb_info)
         self.logger.debug(f"  Found {len(ret_names)} alternative names from alternative_titles/translations")
@@ -648,14 +644,46 @@ class TMDBClient:
         for name in ret_names:
             if name:
                 name_lower = name.lower()
-                if name_lower in folder_name_lower:
+                # Remove common punctuation and normalize for better matching
+                name_normalized = name_lower.replace('.', ' ').replace('_', ' ').replace('-', ' ')
+                folder_normalized = folder_name_lower.replace('.', ' ').replace('_', ' ').replace('-', ' ')
+                
+                # Check if name appears in folder_name (as whole word or significant substring)
+                if name_lower in folder_name_lower or name_normalized in folder_normalized:
                     matching_names.append(name)
-                    # Year already checked above, so if we reach here and year matches, it's high confidence
-                    self.logger.info(f"  → Confidence: HIGH (name '{name}' found in folder_name '{folder_name}', year matches)")
-                    return "high"
+                    self.logger.debug(f"  Found matching name: '{name}' in folder_name")
         
+        # If no name matches folder_name, it's low confidence (even if year matches)
+        if not matching_names:
+            self.logger.warning(f"  → Confidence: LOW (no matching names found in folder_name '{folder_name}')")
+            self.logger.debug(f"    Checked {len(ret_names)} names against folder_name")
+            self.logger.debug(f"    Result name: '{result.name}', Original: '{result.original_name}'")
+            if input_name:
+                self.logger.debug(f"    Input name: '{input_name}'")
+            return "low"
+        
+        # If single result, name matches folder_name, and year matches (or no year provided), it's high confidence
+        if all_results_count == 1:
+            self.logger.info(f"  → Confidence: HIGH (single result, name '{matching_names[0]}' found in folder_name, year matches)")
+            return "high"
+        
+        self.logger.debug(f"  Multiple results ({all_results_count}), checking for exact matches...")
+        
+        # Check exact name and year match
+        if input_year and result.year:
+            self.logger.debug(f"  Comparing years: input={input_year}, result={result.year}")
+            if result.name == input_name and result.year == input_year:
+                self.logger.info(f"  → Confidence: HIGH (exact name and year match: '{result.name}' == '{input_name}', {result.year} == {input_year})")
+                return "high"
+            if result.original_name == input_name and result.year == input_year:
+                self.logger.info(f"  → Confidence: HIGH (exact original name and year match: '{result.original_name}' == '{input_name}', {result.year} == {input_year})")
+                return "high"
+            self.logger.debug(f"  No exact name+year match found")
+        else:
+            self.logger.debug(f"  Year comparison skipped (input_year={input_year}, result.year={result.year})")
+        
+        # If we have matching names in folder_name and year matches, it's high confidence
         if matching_names:
-            # Year already checked above, so if we reach here and year matches, it's high confidence
             self.logger.info(f"  → Confidence: HIGH (found {len(matching_names)} matching names in folder_name, year matches)")
             return "high"
         
@@ -726,13 +754,39 @@ class TMDBClient:
         
         return seasons_data
     
+    def _fetch_season_details(self, tv_id: int, season_number: int, language: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetch details for a specific season
+        
+        Args:
+            tv_id: TMDB TV show ID
+            season_number: Season number to fetch
+            language: Language to use
+            
+        Returns:
+            Season details dictionary or None
+        """
+        original_language = self.tmdb.language
+        try:
+            self.tmdb.language = language
+            self._wait_for_rate_limit()
+            season_details = self.season.details(tv_id, season_number)
+            return season_details
+        except Exception as e:
+            self.logger.warning(f"Error fetching season {season_number} details for TV show {tv_id}: {e}")
+            return None
+        finally:
+            self.tmdb.language = original_language
+    
     def get_tv_show(
         self,
         folder_name: str,
         cn_name: Optional[str] = None,
         en_name: Optional[str] = None,
         year: Optional[int] = None,
-        tmdbid: Optional[int] = None
+        tmdbid: Optional[int] = None,
+        folder_type: Optional[str] = None,
+        detected_season: Optional[int] = None
     ) -> Optional[TVShowMetadata]:
         """
         Get TV show information with comprehensive search strategy and confidence checking
@@ -743,6 +797,8 @@ class TMDBClient:
             en_name: English name (optional)
             year: Release year (optional)
             tmdbid: TMDB ID (optional, if provided, used directly)
+            folder_type: Folder type - "direct_files" or "season_subfolders" (optional)
+            detected_season: Detected season number from folder/files (optional)
             
         Returns:
             TVShowMetadata with full data if trustable, None otherwise
@@ -794,10 +850,17 @@ class TMDBClient:
                     return result
             
             # Strategy 2: If cn_name is provided, search with year, then try multiple languages
+            # SPECIAL CASE: If folder_type is DIRECT_FILES and detected_season > 1,
+            # skip year filter in initial search (year might be season release year, not show first air date)
+            use_year_in_search = year
+            if folder_type == "direct_files" and detected_season and detected_season > 1:
+                self.logger.info(f"  Detected direct files with season {detected_season} > 1, searching without year filter (year {year} may be season release year)")
+                use_year_in_search = None
+            
             if not result and cn_name:
-                self.logger.debug(f"Searching with cn_name: {cn_name}, year: {year}")
-                # First try with year
-                search_result = self._search_with_languages(cn_name, year, self.languages)
+                self.logger.debug(f"Searching with cn_name: {cn_name}, year: {use_year_in_search}")
+                # First try with year (or without if season > 1)
+                search_result = self._search_with_languages(cn_name, use_year_in_search, self.languages)
                 if search_result:
                     result, search_language = search_result
                     # Count total results for confidence checking
@@ -807,8 +870,8 @@ class TMDBClient:
                         # Enforce rate limiting before making the API request
                         self._wait_for_rate_limit()
                         all_results = self.tv.search(cn_name)
-                        if year:
-                            all_results = [r for r in all_results if r.get('first_air_date') and r['first_air_date'].startswith(str(year))]
+                        if use_year_in_search:
+                            all_results = [r for r in all_results if r.get('first_air_date') and r['first_air_date'].startswith(str(use_year_in_search))]
                         all_results_count = len(all_results) if all_results else 1
                     except:
                         all_results_count = 1
@@ -836,8 +899,8 @@ class TMDBClient:
             
             # Strategy 3: If cn_name is None but en_name is provided, search with year
             if not result and en_name:
-                self.logger.debug(f"Searching with en_name: {en_name}, year: {year}")
-                results = self.search_tv_show(en_name, year)
+                self.logger.debug(f"Searching with en_name: {en_name}, year: {use_year_in_search}")
+                results = self.search_tv_show(en_name, use_year_in_search)
                 if results:
                     result = results[0]
                     search_language = self.language
@@ -898,10 +961,60 @@ class TMDBClient:
             input_name = cn_name if cn_name else en_name
             self.logger.info(f"Evaluating match confidence for result: {result.name} (ID: {result.id})")
             confidence = self._check_match_confidence(
-                result, folder_name, input_name, year, all_results_count, full_details
+                result, folder_name, input_name, year, all_results_count, full_details,
+                folder_type=folder_type, detected_season=detected_season
             )
             result.match_confidence = confidence
             self.logger.info(f"Final confidence level: {confidence}")
+            
+            # SPECIAL VALIDATION: If folder_type is DIRECT_FILES and detected_season > 1,
+            # validate that the season's air date year OR show's first air date year matches the LLM-extracted year
+            # (folder year could be either season release year or show first air date)
+            # Allow ±1 year tolerance for both show year and season year
+            if confidence == "high" and folder_type == "direct_files" and detected_season and detected_season > 1 and year:
+                self.logger.info(f"  Validating year for season {detected_season} (LLM year: {year})")
+                self.logger.debug(f"  Show first air date year: {result.year}")
+                
+                # Check if show year matches (with ±1 tolerance)
+                show_year_diff = abs(result.year - year) if result.year else None
+                show_year_matches = (show_year_diff is not None and show_year_diff <= 1)
+                if show_year_matches:
+                    if show_year_diff == 0:
+                        self.logger.info(f"  ✓ Show first air date year ({result.year}) matches LLM year ({year})")
+                    else:
+                        self.logger.info(f"  ✓ Show first air date year ({result.year}) within ±1 year tolerance of LLM year ({year})")
+                else:
+                    # If show year doesn't match, check season year (folder year = season release year)
+                    self.logger.debug(f"  Show year ({result.year}) doesn't match (diff={show_year_diff}), checking season {detected_season} air date year")
+                    season_details = self._fetch_season_details(result.id, detected_season, search_language or self.language)
+                    if season_details:
+                        season_air_date = season_details.get('air_date')
+                        season_year = self._extract_year_from_date(season_air_date)
+                        if season_year:
+                            self.logger.debug(f"  Season {detected_season} air date: {season_air_date}, year: {season_year}")
+                            season_year_diff = abs(season_year - year)
+                            if season_year_diff <= 1:
+                                if season_year_diff == 0:
+                                    self.logger.info(f"  ✓ Season {detected_season} year ({season_year}) matches LLM year ({year})")
+                                else:
+                                    self.logger.info(f"  ✓ Season {detected_season} year ({season_year}) within ±1 year tolerance of LLM year ({year})")
+                            else:
+                                # Neither show year nor season year matches (even with tolerance)
+                                self.logger.warning(f"  → Confidence downgraded: Neither show year ({result.year}, diff={show_year_diff}) nor season {detected_season} year ({season_year}, diff={season_year_diff}) matches LLM year ({year}) within ±1 tolerance")
+                                confidence = "low"
+                                result.match_confidence = "low"
+                        else:
+                            self.logger.warning(f"  Could not extract year from season {detected_season} air date: {season_air_date}")
+                            # If we can't get season year, and show year doesn't match, downgrade
+                            self.logger.warning(f"  → Confidence downgraded: Show year ({result.year}, diff={show_year_diff}) doesn't match and season year unavailable")
+                            confidence = "low"
+                            result.match_confidence = "low"
+                    else:
+                        self.logger.warning(f"  Could not fetch season {detected_season} details for validation")
+                        # If we can't get season details, and show year doesn't match, downgrade
+                        self.logger.warning(f"  → Confidence downgraded: Show year ({result.year}, diff={show_year_diff}) doesn't match and season details unavailable")
+                        confidence = "low"
+                        result.match_confidence = "low"
             
             # Only proceed if confidence is high
             if confidence != "high":

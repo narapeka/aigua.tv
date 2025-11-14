@@ -3,26 +3,38 @@ Extract the Chinese name (cn_name), English name (en_name), release year (year),
 
 Rules:
 1. cn_name: The Chinese name of the TV show, if present. Return null if not found.
+   - IMPORTANT: Exclude season information from the show name.
+   - Remove season indicators like: 第一季, 第二季, 第三季, 第1季, 第2季, 第3季, 一季, 二季, 三季, S01, S02, S03, Season 1, Season 2, etc.
+   - Example: "一人之下第二季" → "一人之下" (NOT "一人之下第二季")
+   - Example: "权力的游戏 第一季" → "权力的游戏" (NOT "权力的游戏 第一季")
+
 2. en_name: The English name of the TV show, if present. Return null if not found.
+   - IMPORTANT: Exclude season information from the show name.
+   - Remove season indicators like: S01, S02, S03, Season 1, Season 2, Season 3, etc.
+   - Example: "The Outcast S02" → "The Outcast" (NOT "The Outcast S02")
+   - Example: "Game of Thrones S01" → "Game of Thrones" (NOT "Game of Thrones S01")
+
 3. year: The release year as an integer (e.g., 2020), if present. Return null if not found.
+
 4. tmdbid: The TMDB (The Movie Database) ID as an integer, if present in the folder name. 
    Look for patterns like: tmdbid=12345, tmdbid-12345, tmdb=12345, tmdb-12345
    Extract only the numeric ID. Return null if not found.
 
 Return a JSON array where each object has:
 - folder_name: The original folder name
-- cn_name: Chinese name or null
-- en_name: English name or null
+- cn_name: Chinese name or null (WITHOUT season information)
+- en_name: English name or null (WITHOUT season information)
 - year: Year as integer or null
 - tmdbid: TMDB ID as integer or null
 
-Example input: ["权力的游戏 第一季", "Game of Thrones S01", "The Office (2005)", "Breaking Bad tmdbid=1396"]
+Example input: ["权力的游戏 第一季", "Game of Thrones S01", "The Office (2005)", "Breaking Bad tmdbid=1396", "一人之下第二季.The.Outcast.S02.2017"]
 Example output:
 [
   {"folder_name": "权力的游戏 第一季", "cn_name": "权力的游戏", "en_name": null, "year": null, "tmdbid": null},
   {"folder_name": "Game of Thrones S01", "cn_name": null, "en_name": "Game of Thrones", "year": null, "tmdbid": null},
   {"folder_name": "The Office (2005)", "cn_name": null, "en_name": "The Office", "year": 2005, "tmdbid": null},
-  {"folder_name": "Breaking Bad tmdbid=1396", "cn_name": null, "en_name": "Breaking Bad", "year": null, "tmdbid": 1396}
+  {"folder_name": "Breaking Bad tmdbid=1396", "cn_name": null, "en_name": "Breaking Bad", "year": null, "tmdbid": 1396},
+  {"folder_name": "一人之下第二季.The.Outcast.S02.2017", "cn_name": "一人之下", "en_name": "The Outcast", "year": 2017, "tmdbid": null}
 ]
 
 Always return valid JSON only, no additional text.

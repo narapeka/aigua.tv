@@ -47,11 +47,13 @@ class TVShowOrganizer:
         self.dry_run = dry_run
         self.verbose = verbose
         
-        # Setup log directory
+        # Setup log directory - default to project root logs folder
         if log_dir:
             self.log_dir = Path(log_dir).resolve()
         else:
-            self.log_dir = self.output_dir / "logs"
+            # Use logs folder in project root (where this script is located)
+            project_root = Path(__file__).parent
+            self.log_dir = project_root / "logs"
         self.log_dir.mkdir(parents=True, exist_ok=True)
         
         # Generate log file names with timestamp
@@ -93,8 +95,8 @@ class TVShowOrganizer:
             'errors': 0
         }
         
-        # File operation timeout (15 seconds for network storage)
-        self.file_operation_timeout = 15
+        # File operation timeout (60 seconds for network storage)
+        self.file_operation_timeout = 60
         
         self.logger.info(f"{Colors.CYAN}TV Show Media Library Organizer{Colors.RESET}")
         self.logger.info(f"Input Directory: {Colors.YELLOW}{self.input_dir}{Colors.RESET}")
@@ -160,12 +162,58 @@ class TVShowOrganizer:
             self.logger.error(f"Error extracting TV show info with LLM: {e}")
             return [TVShowInfo(folder_name=name) for name in folder_names]
     
-    def fetch_tmdb_metadata(self, tv_show_info: TVShowInfo) -> Optional[TVShowMetadata]:
+    def _detect_season_from_folder(self, folder_path: Path) -> Tuple[Optional[str], Optional[int]]:
+        """
+        Detect folder type and season number from folder structure and files
+        Uses the same logic as process_direct_files_folder and process_season_subfolders
+        
+        Args:
+            folder_path: Path to the folder
+            
+        Returns:
+            Tuple of (folder_type, detected_season) where:
+            - folder_type: "direct_files" or "season_subfolders" or None
+            - detected_season: Season number if detected, None otherwise
+        """
+        if not folder_path.exists() or not folder_path.is_dir():
+            return None, None
+        
+        folder_type = self.determine_folder_type(folder_path)
+        
+        if folder_type == FolderType.DIRECT_FILES:
+            # Check folder name first for season number (e.g., "一人之下第二季", "The.Outcast.S02")
+            folder_season = extract_season_number(folder_path.name, None)
+            
+            # Validate folder_season - filter out unreasonable values
+            if folder_season and not (1 <= folder_season <= 100):
+                folder_season = None
+            
+            # Also check first file for season number
+            video_files = self.get_video_files(folder_path)
+            file_season = None
+            if video_files:
+                first_file = video_files[0]
+                detected_season, _, _ = extract_episode_info(first_file.name)
+                if 1 <= detected_season <= 100:
+                    file_season = detected_season
+            
+            # Use folder season if available and valid, otherwise use file season
+            if folder_season:
+                return "direct_files", folder_season
+            elif file_season:
+                return "direct_files", file_season
+            else:
+                return "direct_files", None
+        else:
+            return "season_subfolders", None
+    
+    def fetch_tmdb_metadata(self, tv_show_info: TVShowInfo, folder_path: Optional[Path] = None) -> Optional[TVShowMetadata]:
         """
         Call TMDB client to get metadata (with caching)
         
         Args:
             tv_show_info: TVShowInfo from LLM extraction
+            folder_path: Optional path to folder for season detection
             
         Returns:
             TVShowMetadata if found, None otherwise
@@ -177,6 +225,14 @@ class TVShowOrganizer:
             self.logger.debug(f"Cache hit for: {tv_show_info.folder_name}")
             return cached_metadata
         
+        # Detect folder type and season if folder_path provided
+        folder_type = None
+        detected_season = None
+        if folder_path:
+            folder_type, detected_season = self._detect_season_from_folder(folder_path)
+            if folder_type and detected_season:
+                self.logger.debug(f"Detected folder_type={folder_type}, season={detected_season} for {tv_show_info.folder_name}")
+        
         # Fetch from TMDB
         self.logger.info(f"Fetching TMDB metadata for: {tv_show_info.folder_name}")
         try:
@@ -185,7 +241,9 @@ class TVShowOrganizer:
                 cn_name=tv_show_info.cn_name,
                 en_name=tv_show_info.en_name,
                 year=tv_show_info.year,
-                tmdbid=tv_show_info.tmdbid
+                tmdbid=tv_show_info.tmdbid,
+                folder_type=folder_type,
+                detected_season=detected_season
             )
             
             if metadata:
@@ -201,13 +259,14 @@ class TVShowOrganizer:
             self.logger.error(f"Error fetching TMDB metadata for '{tv_show_info.folder_name}': {e}")
             return None
     
-    def _file_operation_with_timeout(self, operation, *args, **kwargs):
+    def _file_operation_with_timeout(self, operation, *args, executor=None, **kwargs):
         """
         Execute file operation with timeout
         
         Args:
             operation: Function to execute
             *args: Positional arguments for operation
+            executor: Optional ThreadPoolExecutor to reuse (if None, creates a new one)
             **kwargs: Keyword arguments for operation
             
         Returns:
@@ -216,9 +275,71 @@ class TVShowOrganizer:
         Raises:
             FutureTimeoutError: If operation times out
         """
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(operation, *args, **kwargs)
-            return future.result(timeout=self.file_operation_timeout)
+        import threading
+        thread_id = threading.current_thread().ident
+        op_name = operation.__name__ if hasattr(operation, '__name__') else str(operation)
+        
+        if executor is not None:
+            # Check if we're already running in an executor thread to avoid deadlock
+            # If we're in an executor thread and try to submit to the same executor, it will deadlock
+            current_thread = threading.current_thread()
+            is_in_executor_thread = any(
+                current_thread is worker_thread 
+                for worker_thread in getattr(executor, '_threads', set())
+            )
+            
+            if is_in_executor_thread:
+                # We're already in an executor thread - call operation directly with threading.Timer for timeout
+                # This avoids deadlock from recursive executor submission
+                self.logger.debug(f"      [DEBUG] _file_operation_with_timeout: {op_name} - Already in executor thread, calling directly with Timer timeout")
+                
+                result_container = {'result': None, 'exception': None, 'completed': False}
+                
+                def run_operation():
+                    try:
+                        result_container['result'] = operation(*args, **kwargs)
+                    except Exception as e:
+                        result_container['exception'] = e
+                    finally:
+                        result_container['completed'] = True
+                
+                # Start operation in a separate thread
+                op_thread = threading.Thread(target=run_operation, daemon=True)
+                op_thread.start()
+                op_thread.join(timeout=self.file_operation_timeout)
+                
+                if not result_container['completed']:
+                    self.logger.debug(f"      [DEBUG] _file_operation_with_timeout: {op_name} - TIMEOUT after {self.file_operation_timeout}s")
+                    raise FutureTimeoutError(f"Operation {op_name} timed out after {self.file_operation_timeout}s")
+                
+                if result_container['exception']:
+                    raise result_container['exception']
+                
+                return result_container['result']
+            else:
+                # Not in executor thread - safe to submit to executor
+                self.logger.debug(f"      [DEBUG] _file_operation_with_timeout: {op_name} - Submitting to shared executor, Thread ID: {thread_id}")
+                submit_start = datetime.now()
+                future = executor.submit(operation, *args, **kwargs)
+                submit_elapsed = (datetime.now() - submit_start).total_seconds()
+                self.logger.debug(f"      [DEBUG] _file_operation_with_timeout: {op_name} - Submitted in {submit_elapsed:.4f}s, waiting for result (timeout={self.file_operation_timeout}s)")
+                
+                result_start = datetime.now()
+                try:
+                    result = future.result(timeout=self.file_operation_timeout)
+                    result_elapsed = (datetime.now() - result_start).total_seconds()
+                    self.logger.debug(f"      [DEBUG] _file_operation_with_timeout: {op_name} - Result received in {result_elapsed:.2f}s")
+                    return result
+                except FutureTimeoutError:
+                    result_elapsed = (datetime.now() - result_start).total_seconds()
+                    self.logger.debug(f"      [DEBUG] _file_operation_with_timeout: {op_name} - TIMEOUT after {result_elapsed:.2f}s (limit: {self.file_operation_timeout}s)")
+                    raise
+        else:
+            # Create new executor for one-off operations
+            self.logger.debug(f"      [DEBUG] _file_operation_with_timeout: {op_name} - Creating new executor (one-off operation)")
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(operation, *args, **kwargs)
+                return future.result(timeout=self.file_operation_timeout)
     
     def determine_folder_type(self, folder_path: Path) -> FolderType:
         """Determine if folder contains direct files or season subfolders"""
@@ -403,9 +524,104 @@ class TVShowOrganizer:
             folder_type=FolderType.SEASON_SUBFOLDERS
         )
     
+    def _move_single_episode(self, episode: Episode, new_path: Path, tv_show: TVShow, 
+                             show_folder: Path, folder_file_counts: Dict, executor: ThreadPoolExecutor) -> Dict:
+        """
+        Move a single episode file with timeout
+        
+        Args:
+            episode: Episode to move
+            new_path: Destination path for the file
+            tv_show: TVShow object for context
+            show_folder: Show folder path for tracking
+            folder_file_counts: Dictionary tracking file counts per folder
+            executor: ThreadPoolExecutor to use for timeout
+        
+        Returns:
+            Dictionary with episode details and status
+        """
+        import threading
+        thread_id = threading.current_thread().ident
+        start_time = datetime.now()
+        
+        episode_details = {
+            'episode_number': episode.episode_number,
+            'original_file': episode.original_path.name,
+            'original_path': str(episode.original_path),
+            'new_file': new_path.name,
+            'new_path': str(new_path.relative_to(self.output_dir)),
+            'status': 'pending'
+        }
+        
+        self.logger.debug(f"    [DEBUG] E{episode.episode_number:02d} START - Thread ID: {thread_id}, Source: {episode.original_path.name[:50]}...")
+        
+        try:
+            # Check file size for logging
+            file_size = 0
+            try:
+                if episode.original_path.exists():
+                    file_size = episode.original_path.stat().st_size
+                    self.logger.debug(f"    [DEBUG] E{episode.episode_number:02d} File size: {file_size / (1024*1024*1024):.2f}GB")
+            except Exception as e:
+                self.logger.debug(f"    [DEBUG] E{episode.episode_number:02d} Could not get file size: {e}")
+            
+            # Log executor status before operation
+            if hasattr(executor, '_threads'):
+                active_count = len([t for t in executor._threads if t.is_alive()])
+                self.logger.debug(f"    [DEBUG] E{episode.episode_number:02d} Executor active threads: {active_count}/{executor._max_workers}")
+            
+            # Check if destination file already exists - skip if it does
+            if new_path.exists():
+                self.logger.warning(f"    {Colors.YELLOW}Destination file already exists, skipping: {new_path.name}{Colors.RESET}")
+                self.logger.debug(f"    [DEBUG] E{episode.episode_number:02d} SKIPPED - File already exists at destination")
+                episode_details['status'] = 'skipped'
+                episode_details['error'] = 'Destination file already exists'
+                # Do NOT count as moved - source file remains for user to decide later
+                # Do NOT increment folder_file_counts - file stays in source location
+                return episode_details
+            
+            # Move (rename) the file with timeout using shared executor
+            self.logger.debug(f"    [DEBUG] E{episode.episode_number:02d} Calling _file_operation_with_timeout (timeout={self.file_operation_timeout}s)")
+            move_start = datetime.now()
+            self._file_operation_with_timeout(shutil.move, str(episode.original_path), str(new_path), executor=executor)
+            move_elapsed = (datetime.now() - move_start).total_seconds()
+            self.logger.debug(f"    [DEBUG] E{episode.episode_number:02d} Move completed in {move_elapsed:.2f}s")
+            
+            self.stats['episodes_moved'] += 1
+            episode_details['status'] = 'moved'
+            
+            # Track successful move for folder cleanup (thread-safe increment)
+            if tv_show.folder_type == FolderType.DIRECT_FILES:
+                folder_file_counts[show_folder]['moved'] += 1
+            else:
+                episode_folder = episode.original_path.parent
+                if episode_folder in folder_file_counts:
+                    folder_file_counts[episode_folder]['moved'] += 1
+            
+            total_elapsed = (datetime.now() - start_time).total_seconds()
+            self.logger.debug(f"    [DEBUG] E{episode.episode_number:02d} SUCCESS - Total time: {total_elapsed:.2f}s")
+            
+        except FutureTimeoutError as e:
+            total_elapsed = (datetime.now() - start_time).total_seconds()
+            self.logger.error(f"Timeout moving file: {episode.original_path}")
+            self.logger.debug(f"    [DEBUG] E{episode.episode_number:02d} TIMEOUT - Elapsed: {total_elapsed:.2f}s, Timeout limit: {self.file_operation_timeout}s, Thread ID: {thread_id}")
+            self.stats['errors'] += 1
+            episode_details['status'] = 'timeout'
+            episode_details['error'] = f'Timeout moving file (elapsed: {total_elapsed:.2f}s, limit: {self.file_operation_timeout}s)'
+        except Exception as e:
+            total_elapsed = (datetime.now() - start_time).total_seconds()
+            self.logger.error(f"Failed to move {episode.original_path}: {e}")
+            self.logger.debug(f"    [DEBUG] E{episode.episode_number:02d} ERROR - Type: {type(e).__name__}, Message: {str(e)}, Elapsed: {total_elapsed:.2f}s, Thread ID: {thread_id}")
+            self.stats['errors'] += 1
+            episode_details['status'] = 'error'
+            episode_details['error'] = str(e)
+        
+        return episode_details
+    
     def _match_episode_with_tmdb(self, episode: Episode, tmdb_metadata: TVShowMetadata) -> None:
         """
         Match episode with TMDB metadata and set TMDB title
+        For multi-episode files, collects titles for all episodes in the range
         
         Args:
             episode: Episode to match
@@ -417,16 +633,44 @@ class TVShowOrganizer:
         # Find matching season in TMDB metadata
         for tmdb_season in tmdb_metadata.seasons:
             if tmdb_season.season_number == episode.season_number:
-                # Find matching episode in TMDB season
-                for tmdb_episode in tmdb_season.episodes:
-                    if tmdb_episode.episode_number == episode.episode_number:
-                        episode.tmdb_title = tmdb_episode.title
-                        self.logger.debug(f"  Matched S{episode.season_number:02d}E{episode.episode_number:02d} with TMDB title: {tmdb_episode.title}")
-                        return
+                # Check if this is a multi-episode file
+                if episode.end_episode_number:
+                    # Multi-episode file: collect titles only for first and last episodes (from...to pattern)
+                    titles = []
+                    # Get title for first episode (episode_number)
+                    for tmdb_episode in tmdb_season.episodes:
+                        if tmdb_episode.episode_number == episode.episode_number:
+                            titles.append(tmdb_episode.title)
+                            self.logger.debug(f"  Matched S{episode.season_number:02d}E{episode.episode_number:02d} with TMDB title: {tmdb_episode.title}")
+                            break
+                    
+                    # Get title for last episode (end_episode_number) - only if different from first
+                    if episode.end_episode_number != episode.episode_number:
+                        for tmdb_episode in tmdb_season.episodes:
+                            if tmdb_episode.episode_number == episode.end_episode_number:
+                                titles.append(tmdb_episode.title)
+                                self.logger.debug(f"  Matched S{episode.season_number:02d}E{episode.end_episode_number:02d} with TMDB title: {tmdb_episode.title}")
+                                break
+                    
+                    # Join titles with "-" separator (only first and last episode titles)
+                    if titles:
+                        episode.tmdb_title = "-".join(titles)
+                        self.logger.debug(f"  Multi-episode S{episode.season_number:02d}E{episode.episode_number:02d}-E{episode.end_episode_number:02d} titles: {episode.tmdb_title}")
+                else:
+                    # Single episode: find matching episode in TMDB season
+                    for tmdb_episode in tmdb_season.episodes:
+                        if tmdb_episode.episode_number == episode.episode_number:
+                            episode.tmdb_title = tmdb_episode.title
+                            self.logger.debug(f"  Matched S{episode.season_number:02d}E{episode.episode_number:02d} with TMDB title: {tmdb_episode.title}")
+                            return
                 break
     
     def organize_show(self, tv_show: TVShow) -> bool:
         """Organize a TV show into Emby format using TMDB metadata"""
+        # Create a single executor for all file operations in this show (optimization #3)
+        # max_workers=2 to respect cloud storage thread limits (1 show × 2 episodes = 2 concurrent operations)
+        file_operation_executor = ThreadPoolExecutor(max_workers=2) if not self.dry_run else None
+        
         try:
             # Generate folder name using TMDB metadata: {tmdb_name} ({year}) {{tmdb-{tmdb_id}}}
             if tv_show.tmdb_metadata:
@@ -466,9 +710,11 @@ class TVShowOrganizer:
             # Key: folder Path, Value: {'found': count, 'moved': count}
             folder_file_counts = {}
             
+            # Get show folder for tracking (used in both folder types)
+            show_folder = tv_show.original_folder
+            
             # For direct files, also track the show folder
             if tv_show.folder_type == FolderType.DIRECT_FILES:
-                show_folder = tv_show.original_folder
                 total_episodes = sum(len(s.episodes) for s in tv_show.seasons)
                 folder_file_counts[show_folder] = {'found': total_episodes, 'moved': 0}
             
@@ -489,19 +735,25 @@ class TVShowOrganizer:
                         folder_file_counts[season_folder] = {'found': 0, 'moved': 0}
                     folder_file_counts[season_folder]['found'] = len(season.episodes)
                 
-                # Create season directory with timeout
+                # Create season directory with timeout using shared executor
                 if not self.dry_run:
                     try:
-                        self._file_operation_with_timeout(season_dir.mkdir, parents=True, exist_ok=True)
+                        self._file_operation_with_timeout(season_dir.mkdir, parents=True, exist_ok=True, executor=file_operation_executor)
                     except FutureTimeoutError:
                         self.logger.error(f"Timeout creating season directory: {season_dir}")
                         self.stats['errors'] += 1
+                        if file_operation_executor:
+                            file_operation_executor.shutdown(wait=True)
                         return False
                     except Exception as e:
                         self.logger.error(f"Error creating season directory {season_dir}: {e}")
                         self.stats['errors'] += 1
+                        if file_operation_executor:
+                            file_operation_executor.shutdown(wait=True)
                         return False
                 
+                # Prepare episode move tasks (optimization #2: parallelize episode moves)
+                episode_tasks = []
                 for episode in season.episodes:
                     new_filename = generate_filename(episode, tmdb_show_name=tmdb_show_name)
                     new_path = season_dir / new_filename
@@ -510,59 +762,78 @@ class TVShowOrganizer:
                     self.logger.info(f"    {Colors.YELLOW}Moving:{Colors.RESET} {episode.original_path.name}")
                     self.logger.info(f"    {Colors.GREEN}To:{Colors.RESET} {new_path.relative_to(self.output_dir)}")
                     
-                    episode_details = {
-                        'episode_number': episode.episode_number,
-                        'original_file': episode.original_path.name,
-                        'original_path': str(episode.original_path),
-                        'new_file': new_filename,
-                        'new_path': str(new_path.relative_to(self.output_dir)),
-                        'status': 'pending'
-                    }
+                    episode_tasks.append((episode, new_path))
+                
+                # Process episodes in parallel (optimization #2)
+                if not self.dry_run and file_operation_executor:
+                    # Submit all episode moves in parallel
+                    self.logger.debug(f"    [DEBUG] Submitting {len(episode_tasks)} episode move tasks to executor (max_workers=2)")
+                    future_to_episode = {}
+                    for idx, (episode, new_path) in enumerate(episode_tasks):
+                        future = file_operation_executor.submit(
+                            self._move_single_episode,
+                            episode, new_path, tv_show, show_folder, folder_file_counts, file_operation_executor
+                        )
+                        future_to_episode[future] = (episode, new_path)
+                        self.logger.debug(f"    [DEBUG] Submitted E{episode.episode_number:02d} to executor (task {idx+1}/{len(episode_tasks)})")
                     
-                    # Move the file with timeout
-                    if not self.dry_run:
+                    # Log executor status
+                    self.logger.debug(f"    [DEBUG] Executor active threads: {file_operation_executor._threads}, queue size: {file_operation_executor._work_queue.qsize() if hasattr(file_operation_executor._work_queue, 'qsize') else 'N/A'}")
+                    
+                    # Collect results as they complete (maintain order for reporting)
+                    episode_results = {}
+                    completed_count = 0
+                    start_time = datetime.now()
+                    for future in as_completed(future_to_episode):
+                        episode, new_path = future_to_episode[future]
+                        completed_count += 1
+                        elapsed = (datetime.now() - start_time).total_seconds()
+                        self.logger.debug(f"    [DEBUG] Future completed for E{episode.episode_number:02d} ({completed_count}/{len(episode_tasks)}), elapsed: {elapsed:.2f}s")
+                        
                         try:
-                            # Ensure target directory exists with timeout
-                            try:
-                                self._file_operation_with_timeout(new_path.parent.mkdir, parents=True, exist_ok=True)
-                            except FutureTimeoutError:
-                                self.logger.error(f"Timeout creating directory: {new_path.parent}")
-                                self.stats['errors'] += 1
-                                episode_details['status'] = 'timeout'
-                                episode_details['error'] = 'Timeout creating directory'
-                                continue
-                            
-                            # Move (rename) the file with timeout
-                            try:
-                                self._file_operation_with_timeout(shutil.move, str(episode.original_path), str(new_path))
-                                self.stats['episodes_moved'] += 1
-                                episode_details['status'] = 'moved'
-                                
-                                # Track successful move for folder cleanup
-                                if tv_show.folder_type == FolderType.DIRECT_FILES:
-                                    # For direct files, track the show folder
-                                    folder_file_counts[show_folder]['moved'] += 1
-                                else:
-                                    # For season subfolders, track the season folder
-                                    episode_folder = episode.original_path.parent
-                                    if episode_folder in folder_file_counts:
-                                        folder_file_counts[episode_folder]['moved'] += 1
-                            except FutureTimeoutError:
-                                self.logger.error(f"Timeout moving file: {episode.original_path}")
-                                self.stats['errors'] += 1
-                                episode_details['status'] = 'timeout'
-                                episode_details['error'] = 'Timeout moving file'
-                                continue
-                            
+                            episode_details = future.result()
+                            episode_results[episode.episode_number] = episode_details
+                            self.logger.debug(f"    [DEBUG] E{episode.episode_number:02d} result: status={episode_details.get('status')}, error={episode_details.get('error', 'None')}")
                         except Exception as e:
-                            self.logger.error(f"Failed to move {episode.original_path}: {e}")
-                            self.stats['errors'] += 1
-                            episode_details['status'] = 'error'
-                            episode_details['error'] = str(e)
-                            continue
-                    else:
+                            self.logger.error(f"Unexpected error processing episode {episode.episode_number}: {e}")
+                            self.logger.debug(f"    [DEBUG] E{episode.episode_number:02d} exception type: {type(e).__name__}, message: {str(e)}")
+                            episode_results[episode.episode_number] = {
+                                'episode_number': episode.episode_number,
+                                'original_file': episode.original_path.name,
+                                'original_path': str(episode.original_path),
+                                'new_file': new_path.name,
+                                'new_path': str(new_path.relative_to(self.output_dir)),
+                                'status': 'error',
+                                'error': str(e)
+                            }
+                    
+                    # Add episode details in episode number order for consistent reporting
+                    for episode, new_path in episode_tasks:
+                        if episode.episode_number in episode_results:
+                            season_details['episodes'].append(episode_results[episode.episode_number])
+                        else:
+                            # Fallback if episode not in results
+                            season_details['episodes'].append({
+                                'episode_number': episode.episode_number,
+                                'original_file': episode.original_path.name,
+                                'original_path': str(episode.original_path),
+                                'new_file': new_path.name,
+                                'new_path': str(new_path.relative_to(self.output_dir)),
+                                'status': 'error',
+                                'error': 'Episode processing failed'
+                            })
+                else:
+                    # Dry-run mode: just create episode details without moving
+                    for episode, new_path in episode_tasks:
                         self.stats['episodes_moved'] += 1
-                        episode_details['status'] = 'dry_run'
+                        episode_details = {
+                            'episode_number': episode.episode_number,
+                            'original_file': episode.original_path.name,
+                            'original_path': str(episode.original_path),
+                            'new_file': new_path.name,
+                            'new_path': str(new_path.relative_to(self.output_dir)),
+                            'status': 'dry_run'
+                        }
                         # In dry-run, also track for reporting
                         if tv_show.folder_type == FolderType.DIRECT_FILES:
                             folder_file_counts[show_folder]['moved'] += 1
@@ -570,8 +841,7 @@ class TVShowOrganizer:
                             episode_folder = episode.original_path.parent
                             if episode_folder in folder_file_counts:
                                 folder_file_counts[episode_folder]['moved'] += 1
-                    
-                    season_details['episodes'].append(episode_details)
+                        season_details['episodes'].append(episode_details)
                 
                 # After processing all episodes in this season, check if folder is empty and remove it
                 if not self.dry_run and tv_show.folder_type == FolderType.SEASON_SUBFOLDERS:
@@ -579,7 +849,7 @@ class TVShowOrganizer:
                         counts = folder_file_counts[season_folder]
                         if counts['found'] > 0 and counts['found'] == counts['moved']:
                             try:
-                                self._file_operation_with_timeout(season_folder.rmdir)
+                                self._file_operation_with_timeout(season_folder.rmdir, executor=file_operation_executor)
                                 self.logger.info(f"    {Colors.CYAN}Removed empty folder: {season_folder}{Colors.RESET}")
                             except FutureTimeoutError:
                                 self.logger.warning(f"Timeout removing folder: {season_folder}")
@@ -599,7 +869,7 @@ class TVShowOrganizer:
                         counts = folder_file_counts[show_folder]
                         if counts['found'] > 0 and counts['found'] == counts['moved']:
                             try:
-                                self._file_operation_with_timeout(show_folder.rmdir)
+                                self._file_operation_with_timeout(show_folder.rmdir, executor=file_operation_executor)
                                 self.logger.info(f"  {Colors.CYAN}Removed empty show folder: {show_folder}{Colors.RESET}")
                             except FutureTimeoutError:
                                 self.logger.warning(f"Timeout removing show folder: {show_folder}")
@@ -621,7 +891,7 @@ class TVShowOrganizer:
                     # If all season folders were removed, the show folder should be empty
                     if seasons_removed == total_seasons and total_seasons > 0:
                         try:
-                            self._file_operation_with_timeout(show_folder.rmdir)
+                            self._file_operation_with_timeout(show_folder.rmdir, executor=file_operation_executor)
                             self.logger.info(f"  {Colors.CYAN}Removed empty show folder: {show_folder}{Colors.RESET}")
                         except FutureTimeoutError:
                             self.logger.warning(f"Timeout removing show folder: {show_folder}")
@@ -631,11 +901,19 @@ class TVShowOrganizer:
             
             self.stats['shows_processed'] += 1
             self.processed_shows.append(show_details)
+            
+            # Shutdown executor (optimization #3)
+            if file_operation_executor:
+                file_operation_executor.shutdown(wait=True)
+            
             return True
             
         except Exception as e:
             self.logger.error(f"Failed to organize show {tv_show.name}: {e}")
             self.stats['errors'] += 1
+            # Ensure executor is shut down even on error
+            if file_operation_executor:
+                file_operation_executor.shutdown(wait=True)
             return False
     
     def scan_and_organize(self) -> bool:
@@ -685,7 +963,7 @@ class TVShowOrganizer:
             """Helper function to fetch metadata for a single show"""
             folder_name = folder_path.name
             tv_show_info = folder_info_map.get(folder_name, TVShowInfo(folder_name=folder_name))
-            metadata = self.fetch_tmdb_metadata(tv_show_info)
+            metadata = self.fetch_tmdb_metadata(tv_show_info, folder_path=folder_path)
             return folder_name, metadata
         
         # Fetch metadata in parallel (max_workers=5)
@@ -727,7 +1005,8 @@ class TVShowOrganizer:
         self.logger.info(f"Found {len(shows_to_skip)} shows to skip (low/medium confidence or no TMDB match)")
         
         # Step 5: Organize files using TMDB metadata
-        # Process shows in parallel (max_workers=2) for file organization
+        # Process shows sequentially (max_workers=1) to respect cloud storage thread limits
+        # Combined with episode-level parallelism (max_workers=2), total = 1 show × 2 episodes = 2 concurrent operations
         success_count = 0
         
         def process_single_show(show_folder: Path, tv_show_info: TVShowInfo, metadata: TVShowMetadata) -> Tuple[str, bool]:
@@ -774,8 +1053,8 @@ class TVShowOrganizer:
                 self.logger.error(f"Error processing show {show_folder.name}: {e}")
                 return show_folder.name, False
         
-        # Process shows in parallel (max_workers=2)
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        # Process shows sequentially (max_workers=1) to respect cloud storage thread limits
+        with ThreadPoolExecutor(max_workers=1) as executor:
             future_to_show = {
                 executor.submit(process_single_show, folder, info, metadata): folder.name
                 for folder, info, metadata in shows_to_process
@@ -870,7 +1149,7 @@ Examples:
     parser.add_argument('output_dir', help='Output directory for organized TV shows')
     parser.add_argument('--dry-run', action='store_true', help='Preview changes without moving files')
     parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose logging')
-    parser.add_argument('--log-dir', help='Directory to save log files (default: output_dir/logs)')
+    parser.add_argument('--log-dir', help='Directory to save log files (default: project_root/logs)')
     parser.add_argument('--version', action='version', version='%(prog)s 1.0.0')
     
     args = parser.parse_args()
