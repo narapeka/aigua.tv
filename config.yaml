@@ -1,0 +1,38 @@
+# LLM agent configuration
+llm:
+  # API configuration
+  api_key: ""  # Your API key (leave empty to use environment variable)
+  base_url: ""  # Base URL for the API (null for OpenAI default)
+  model: ""  # Model name to use
+  
+  # Batch processing configuration
+  batch_size: 50  # Maximum number of folders to process in a single LLM request
+  rate_limit: 2  # Maximum number of API requests allowed per second (default: 2)
+  
+  # Examples for different providers:
+
+  # Gemini (via OpenAI-compatible endpoint):
+  #   api_key: "..."
+  #   base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+  #   model: "gemini-2.5-flash"
+  #
+  # Grok (via OpenAI-compatible endpoint):
+  #   api_key: "..."
+  #   base_url: "https://api.x.ai/v1/"
+  #   model: "grok-4-fast-non-reasoning"
+
+# TMDB API configuration
+tmdb:
+  api_key: ""  # Your TMDB API key (leave empty to use environment variable TMDB_API_KEY)
+  languages:  # Array of languages to try when searching (in order, first one is used as default)
+    - "zh-CN"
+    - "zh-SG"
+    - "zh-TW"
+    - "zh-HK"
+  rate_limit: 40  # Maximum number of API requests allowed per second (default: 40)
+
+# Proxy configuration for accessing LLM and TMDB API 
+proxy:
+  host: "http://127.0.0.1"  # Proxy host with protocol (http:// or https://)
+  port: 8080  # Proxy port
+

@@ -17,13 +17,18 @@ import logging
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
 
 from logger import Colors, setup_logging
 from report import generate_html_report
 from model import FolderType, Episode, Season, TVShow
 from pattern import generate_filename, extract_season_number, extract_episode_info
+from agent import LLMAgent, TVShowInfo
+from tmdb import TMDBClient, TVShowMetadata, create_tmdb_client_from_config
+from cache import TVShowCache
+from config import load_config
 
-class MediaLibraryOrganizer:
+class TVShowOrganizer:
     """Main class for organizing TV show media library"""
     
     # Supported media file extensions (video + subtitles)
@@ -57,9 +62,28 @@ class MediaLibraryOrganizer:
         # Execution tracking
         self.start_time = datetime.now()
         self.processed_shows = []  # Store details of processed shows
+        self.unprocessed_shows = []  # Track unprocessed shows with reasons
         
         # Setup logging
         self.logger = setup_logging(self.log_file, self.verbose)
+        
+        # Load configuration and initialize LLM agent, TMDB client, and cache
+        try:
+            self.config = load_config()
+            self.llm_agent = LLMAgent(
+                api_key=self.config.llm.api_key,
+                base_url=self.config.llm.base_url,
+                model=self.config.llm.model,
+                batch_size=self.config.llm.batch_size,
+                rate_limit=self.config.llm.rate_limit,
+                logger=self.logger
+            )
+            self.tmdb_client = create_tmdb_client_from_config(self.config, self.logger)
+            self.cache = TVShowCache()
+            self.logger.info(f"{Colors.GREEN}LLM Agent and TMDB Client initialized{Colors.RESET}")
+        except Exception as e:
+            self.logger.error(f"{Colors.RED}Failed to initialize LLM/TMDB: {e}{Colors.RESET}")
+            raise
         
         # Statistics
         self.stats = {
@@ -68,6 +92,9 @@ class MediaLibraryOrganizer:
             'episodes_moved': 0,
             'errors': 0
         }
+        
+        # File operation timeout (15 seconds for network storage)
+        self.file_operation_timeout = 15
         
         self.logger.info(f"{Colors.CYAN}TV Show Media Library Organizer{Colors.RESET}")
         self.logger.info(f"Input Directory: {Colors.YELLOW}{self.input_dir}{Colors.RESET}")
@@ -97,6 +124,101 @@ class MediaLibraryOrganizer:
         name = re.sub(r'[^\w\s\-\.\(\)\u4e00-\u9fff]', '', name)  # Include Chinese characters
         name = re.sub(r'\s+', ' ', name)
         return name.strip()
+    
+    def scan_folders(self) -> List[Path]:
+        """
+        Scan input directory to get all subdirectories (potential TV shows)
+        
+        Returns:
+            List of folder paths
+        """
+        if not self.input_dir.exists() or not self.input_dir.is_dir():
+            return []
+        
+        show_folders = [d for d in self.input_dir.iterdir() if d.is_dir()]
+        return sorted(show_folders, key=lambda x: x.name.lower())
+    
+    def batch_extract_with_llm(self, folder_names: List[str]) -> List[TVShowInfo]:
+        """
+        Call LLM agent to batch extract TV show information from folder names
+        
+        Args:
+            folder_names: List of folder names to extract information from
+            
+        Returns:
+            List of TVShowInfo objects
+        """
+        if not folder_names:
+            return []
+        
+        self.logger.info(f"Extracting TV show info for {len(folder_names)} folders using LLM...")
+        try:
+            results = self.llm_agent.extract_tvshow(folder_names)
+            self.logger.info(f"Successfully extracted info for {len(results)} folders")
+            return results
+        except Exception as e:
+            self.logger.error(f"Error extracting TV show info with LLM: {e}")
+            return [TVShowInfo(folder_name=name) for name in folder_names]
+    
+    def fetch_tmdb_metadata(self, tv_show_info: TVShowInfo) -> Optional[TVShowMetadata]:
+        """
+        Call TMDB client to get metadata (with caching)
+        
+        Args:
+            tv_show_info: TVShowInfo from LLM extraction
+            
+        Returns:
+            TVShowMetadata if found, None otherwise
+        """
+        # Check cache first (by folder name or TMDB ID)
+        cache_key = str(tv_show_info.tmdbid) if tv_show_info.tmdbid else tv_show_info.folder_name
+        cached_metadata = self.cache.get(cache_key)
+        if cached_metadata:
+            self.logger.debug(f"Cache hit for: {tv_show_info.folder_name}")
+            return cached_metadata
+        
+        # Fetch from TMDB
+        self.logger.info(f"Fetching TMDB metadata for: {tv_show_info.folder_name}")
+        try:
+            metadata = self.tmdb_client.get_tv_show(
+                folder_name=tv_show_info.folder_name,
+                cn_name=tv_show_info.cn_name,
+                en_name=tv_show_info.en_name,
+                year=tv_show_info.year,
+                tmdbid=tv_show_info.tmdbid
+            )
+            
+            if metadata:
+                # Store in cache
+                cache_key = str(metadata.tmdbid) if metadata.tmdbid else tv_show_info.folder_name
+                self.cache.put(cache_key, metadata)
+                self.logger.info(f"Successfully fetched TMDB metadata for: {metadata.name} (ID: {metadata.id})")
+            else:
+                self.logger.warning(f"No TMDB metadata found for: {tv_show_info.folder_name}")
+            
+            return metadata
+        except Exception as e:
+            self.logger.error(f"Error fetching TMDB metadata for '{tv_show_info.folder_name}': {e}")
+            return None
+    
+    def _file_operation_with_timeout(self, operation, *args, **kwargs):
+        """
+        Execute file operation with timeout
+        
+        Args:
+            operation: Function to execute
+            *args: Positional arguments for operation
+            **kwargs: Keyword arguments for operation
+            
+        Returns:
+            Result of operation
+            
+        Raises:
+            FutureTimeoutError: If operation times out
+        """
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(operation, *args, **kwargs)
+            return future.result(timeout=self.file_operation_timeout)
     
     def determine_folder_type(self, folder_path: Path) -> FolderType:
         """Determine if folder contains direct files or season subfolders"""
@@ -281,10 +403,58 @@ class MediaLibraryOrganizer:
             folder_type=FolderType.SEASON_SUBFOLDERS
         )
     
+    def _match_episode_with_tmdb(self, episode: Episode, tmdb_metadata: TVShowMetadata) -> None:
+        """
+        Match episode with TMDB metadata and set TMDB title
+        
+        Args:
+            episode: Episode to match
+            tmdb_metadata: TMDB metadata with seasons and episodes
+        """
+        if not tmdb_metadata or not tmdb_metadata.seasons:
+            return
+        
+        # Find matching season in TMDB metadata
+        for tmdb_season in tmdb_metadata.seasons:
+            if tmdb_season.season_number == episode.season_number:
+                # Find matching episode in TMDB season
+                for tmdb_episode in tmdb_season.episodes:
+                    if tmdb_episode.episode_number == episode.episode_number:
+                        episode.tmdb_title = tmdb_episode.title
+                        self.logger.debug(f"  Matched S{episode.season_number:02d}E{episode.episode_number:02d} with TMDB title: {tmdb_episode.title}")
+                        return
+                break
+    
     def organize_show(self, tv_show: TVShow) -> bool:
-        """Organize a TV show into Emby format"""
+        """Organize a TV show into Emby format using TMDB metadata"""
         try:
-            show_output_dir = self.output_dir / tv_show.name
+            # Generate folder name using TMDB metadata: {tmdb_name} ({year}) {{tmdb-{tmdb_id}}}
+            if tv_show.tmdb_metadata:
+                # Always use TMDB metadata name for organizing
+                show_name = tv_show.tmdb_metadata.name
+                # Always use year from TMDB result
+                year = tv_show.tmdb_metadata.year
+                # Always use TMDB ID from TMDB result
+                tmdb_id = tv_show.tmdb_metadata.id
+                if year and tmdb_id:
+                    folder_name = f"{show_name} ({year}) {{tmdb-{tmdb_id}}}"
+                elif year:
+                    folder_name = f"{show_name} ({year})"
+                elif tmdb_id:
+                    folder_name = f"{show_name} {{tmdb-{tmdb_id}}}"
+                else:
+                    folder_name = show_name
+                tmdb_show_name = tv_show.tmdb_metadata.name
+                
+                # Match episodes with TMDB metadata to get episode titles
+                for season in tv_show.seasons:
+                    for episode in season.episodes:
+                        self._match_episode_with_tmdb(episode, tv_show.tmdb_metadata)
+            else:
+                folder_name = tv_show.name
+                tmdb_show_name = None
+            
+            show_output_dir = self.output_dir / folder_name
             show_details = {
                 'name': tv_show.name,
                 'folder_type': tv_show.folder_type.value,
@@ -319,12 +489,21 @@ class MediaLibraryOrganizer:
                         folder_file_counts[season_folder] = {'found': 0, 'moved': 0}
                     folder_file_counts[season_folder]['found'] = len(season.episodes)
                 
-                # Create season directory
+                # Create season directory with timeout
                 if not self.dry_run:
-                    season_dir.mkdir(parents=True, exist_ok=True)
+                    try:
+                        self._file_operation_with_timeout(season_dir.mkdir, parents=True, exist_ok=True)
+                    except FutureTimeoutError:
+                        self.logger.error(f"Timeout creating season directory: {season_dir}")
+                        self.stats['errors'] += 1
+                        return False
+                    except Exception as e:
+                        self.logger.error(f"Error creating season directory {season_dir}: {e}")
+                        self.stats['errors'] += 1
+                        return False
                 
                 for episode in season.episodes:
-                    new_filename = generate_filename(episode)
+                    new_filename = generate_filename(episode, tmdb_show_name=tmdb_show_name)
                     new_path = season_dir / new_filename
                     
                     # Log the operation
@@ -340,33 +519,47 @@ class MediaLibraryOrganizer:
                         'status': 'pending'
                     }
                     
-                    # Move the file
+                    # Move the file with timeout
                     if not self.dry_run:
                         try:
-                            # Ensure target directory exists
-                            new_path.parent.mkdir(parents=True, exist_ok=True)
+                            # Ensure target directory exists with timeout
+                            try:
+                                self._file_operation_with_timeout(new_path.parent.mkdir, parents=True, exist_ok=True)
+                            except FutureTimeoutError:
+                                self.logger.error(f"Timeout creating directory: {new_path.parent}")
+                                self.stats['errors'] += 1
+                                episode_details['status'] = 'timeout'
+                                episode_details['error'] = 'Timeout creating directory'
+                                continue
                             
-                            # Move (rename) the file
-                            shutil.move(str(episode.original_path), str(new_path))
-                            self.stats['episodes_moved'] += 1
-                            episode_details['status'] = 'moved'
-                            
-                            # Track successful move for folder cleanup
-                            if tv_show.folder_type == FolderType.DIRECT_FILES:
-                                # For direct files, track the show folder
-                                folder_file_counts[show_folder]['moved'] += 1
-                            else:
-                                # For season subfolders, track the season folder
-                                episode_folder = episode.original_path.parent
-                                if episode_folder in folder_file_counts:
-                                    folder_file_counts[episode_folder]['moved'] += 1
+                            # Move (rename) the file with timeout
+                            try:
+                                self._file_operation_with_timeout(shutil.move, str(episode.original_path), str(new_path))
+                                self.stats['episodes_moved'] += 1
+                                episode_details['status'] = 'moved'
+                                
+                                # Track successful move for folder cleanup
+                                if tv_show.folder_type == FolderType.DIRECT_FILES:
+                                    # For direct files, track the show folder
+                                    folder_file_counts[show_folder]['moved'] += 1
+                                else:
+                                    # For season subfolders, track the season folder
+                                    episode_folder = episode.original_path.parent
+                                    if episode_folder in folder_file_counts:
+                                        folder_file_counts[episode_folder]['moved'] += 1
+                            except FutureTimeoutError:
+                                self.logger.error(f"Timeout moving file: {episode.original_path}")
+                                self.stats['errors'] += 1
+                                episode_details['status'] = 'timeout'
+                                episode_details['error'] = 'Timeout moving file'
+                                continue
                             
                         except Exception as e:
                             self.logger.error(f"Failed to move {episode.original_path}: {e}")
                             self.stats['errors'] += 1
                             episode_details['status'] = 'error'
                             episode_details['error'] = str(e)
-                            return False
+                            continue
                     else:
                         self.stats['episodes_moved'] += 1
                         episode_details['status'] = 'dry_run'
@@ -386,8 +579,10 @@ class MediaLibraryOrganizer:
                         counts = folder_file_counts[season_folder]
                         if counts['found'] > 0 and counts['found'] == counts['moved']:
                             try:
-                                season_folder.rmdir()
+                                self._file_operation_with_timeout(season_folder.rmdir)
                                 self.logger.info(f"    {Colors.CYAN}Removed empty folder: {season_folder}{Colors.RESET}")
+                            except FutureTimeoutError:
+                                self.logger.warning(f"Timeout removing folder: {season_folder}")
                             except OSError:
                                 # Folder not empty or doesn't exist, skip silently
                                 pass
@@ -404,8 +599,10 @@ class MediaLibraryOrganizer:
                         counts = folder_file_counts[show_folder]
                         if counts['found'] > 0 and counts['found'] == counts['moved']:
                             try:
-                                show_folder.rmdir()
+                                self._file_operation_with_timeout(show_folder.rmdir)
                                 self.logger.info(f"  {Colors.CYAN}Removed empty show folder: {show_folder}{Colors.RESET}")
+                            except FutureTimeoutError:
+                                self.logger.warning(f"Timeout removing show folder: {show_folder}")
                             except OSError:
                                 # Folder not empty or doesn't exist, skip silently
                                 pass
@@ -424,8 +621,10 @@ class MediaLibraryOrganizer:
                     # If all season folders were removed, the show folder should be empty
                     if seasons_removed == total_seasons and total_seasons > 0:
                         try:
-                            show_folder.rmdir()
+                            self._file_operation_with_timeout(show_folder.rmdir)
                             self.logger.info(f"  {Colors.CYAN}Removed empty show folder: {show_folder}{Colors.RESET}")
+                        except FutureTimeoutError:
+                            self.logger.warning(f"Timeout removing show folder: {show_folder}")
                         except OSError:
                             # Folder not empty or doesn't exist, skip silently
                             pass
@@ -440,7 +639,7 @@ class MediaLibraryOrganizer:
             return False
     
     def scan_and_organize(self) -> bool:
-        """Main method to scan input directory and organize all shows"""
+        """Main method to scan input directory and organize all shows with LLM and TMDB integration"""
         if not self.input_dir.exists():
             self.logger.error(f"Input directory does not exist: {self.input_dir}")
             return False
@@ -451,12 +650,19 @@ class MediaLibraryOrganizer:
         
         # Create output directory if it doesn't exist
         if not self.dry_run:
-            self.output_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                self._file_operation_with_timeout(self.output_dir.mkdir, parents=True, exist_ok=True)
+            except FutureTimeoutError:
+                self.logger.error(f"Timeout creating output directory: {self.output_dir}")
+                return False
+            except Exception as e:
+                self.logger.error(f"Error creating output directory: {e}")
+                return False
         
         self.logger.info(f"\n{Colors.BOLD}Scanning input directory...{Colors.RESET}")
         
-        # Get all subdirectories (potential TV shows)
-        show_folders = [d for d in self.input_dir.iterdir() if d.is_dir()]
+        # Step 1: Scan input directory → get all subdirectories
+        show_folders = self.scan_folders()
         
         if not show_folders:
             self.logger.warning("No subdirectories found in input directory")
@@ -464,27 +670,136 @@ class MediaLibraryOrganizer:
         
         self.logger.info(f"Found {len(show_folders)} potential TV show folders")
         
+        # Step 2: Batch extract TV show info using LLM agent (all folders at once)
+        folder_names = [folder.name for folder in show_folders]
+        tv_show_infos = self.batch_extract_with_llm(folder_names)
+        
+        # Create a mapping from folder name to TVShowInfo
+        folder_info_map = {info.folder_name: info for info in tv_show_infos}
+        
+        # Step 3: Fetch TMDB metadata for each show (with threading and caching)
+        self.logger.info(f"\n{Colors.BOLD}Fetching TMDB metadata...{Colors.RESET}")
+        metadata_map = {}  # folder_name -> TVShowMetadata
+        
+        def fetch_metadata_for_show(folder_path: Path) -> Tuple[str, Optional[TVShowMetadata]]:
+            """Helper function to fetch metadata for a single show"""
+            folder_name = folder_path.name
+            tv_show_info = folder_info_map.get(folder_name, TVShowInfo(folder_name=folder_name))
+            metadata = self.fetch_tmdb_metadata(tv_show_info)
+            return folder_name, metadata
+        
+        # Fetch metadata in parallel (max_workers=5)
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            future_to_folder = {executor.submit(fetch_metadata_for_show, folder): folder for folder in show_folders}
+            for future in as_completed(future_to_folder):
+                try:
+                    folder_name, metadata = future.result()
+                    metadata_map[folder_name] = metadata
+                except Exception as e:
+                    folder = future_to_folder[future]
+                    self.logger.error(f"Error fetching metadata for {folder.name}: {e}")
+                    metadata_map[folder.name] = None
+        
+        # Step 4: Process shows - filter by confidence and organize
+        self.logger.info(f"\n{Colors.BOLD}Processing shows...{Colors.RESET}")
+        
+        # Separate shows into high-confidence (to process) and low/medium confidence (to skip)
+        shows_to_process = []
+        shows_to_skip = []
+        
+        for show_folder in show_folders:
+            folder_name = show_folder.name
+            tv_show_info = folder_info_map.get(folder_name, TVShowInfo(folder_name=folder_name))
+            metadata = metadata_map.get(folder_name)
+            
+            # Check confidence level
+            if metadata and metadata.match_confidence == "high":
+                shows_to_process.append((show_folder, tv_show_info, metadata))
+            else:
+                reason = "no TMDB match" if not metadata else f"low/medium confidence ({metadata.match_confidence})"
+                shows_to_skip.append((show_folder, reason))
+                self.unprocessed_shows.append({
+                    'folder_name': folder_name,
+                    'reason': reason
+                })
+        
+        self.logger.info(f"Found {len(shows_to_process)} shows with high confidence to process")
+        self.logger.info(f"Found {len(shows_to_skip)} shows to skip (low/medium confidence or no TMDB match)")
+        
+        # Step 5: Organize files using TMDB metadata
+        # Process shows in parallel (max_workers=2) for file organization
         success_count = 0
-        for show_folder in sorted(show_folders, key=lambda x: x.name.lower()):
-            self.logger.info(f"\n{Colors.BOLD}Processing: {show_folder.name}{Colors.RESET}")
-            
-            # Determine folder structure type
-            folder_type = self.determine_folder_type(show_folder)
-            
-            # Process based on folder type
-            if folder_type == FolderType.DIRECT_FILES:
-                tv_show = self.process_direct_files_folder(show_folder)
-            else:
-                tv_show = self.process_season_subfolders(show_folder)
-            
-            if tv_show:
-                if self.organize_show(tv_show):
-                    success_count += 1
-                    self.logger.info(f"{Colors.GREEN}✓ Successfully processed: {tv_show.name}{Colors.RESET}")
+        
+        def process_single_show(show_folder: Path, tv_show_info: TVShowInfo, metadata: TVShowMetadata) -> Tuple[str, bool]:
+            """Helper function to process a single show"""
+            try:
+                # Determine folder structure type
+                folder_type = self.determine_folder_type(show_folder)
+                
+                # Process based on folder type
+                if folder_type == FolderType.DIRECT_FILES:
+                    tv_show = self.process_direct_files_folder(show_folder)
                 else:
-                    self.logger.error(f"{Colors.RED}✗ Failed to process: {show_folder.name}{Colors.RESET}")
-            else:
-                self.logger.warning(f"{Colors.YELLOW}⚠ Skipped: {show_folder.name} (no valid media files found){Colors.RESET}")
+                    tv_show = self.process_season_subfolders(show_folder)
+                
+                if not tv_show:
+                    return show_folder.name, False
+                
+                # Attach TMDB metadata to TVShow
+                tv_show.tmdb_metadata = metadata
+                # Store LLM-extracted names for reference (not used for organizing)
+                tv_show.cn_name = tv_show_info.cn_name
+                tv_show.en_name = tv_show_info.en_name
+                # Always use year from TMDB result
+                tv_show.year = metadata.year if metadata else None
+                # Always use TMDB ID from TMDB result
+                tv_show.tmdb_id = metadata.id if metadata else None
+                tv_show.match_confidence = metadata.match_confidence
+                
+                # Filter seasons: only process seasons that exist in files
+                # (ignore TMDB seasons not present in file structure)
+                file_season_numbers = {season.season_number for season in tv_show.seasons}
+                if metadata.seasons:
+                    # Filter TMDB seasons to only those that exist in files
+                    filtered_tmdb_seasons = [
+                        s for s in metadata.seasons 
+                        if s.season_number in file_season_numbers
+                    ]
+                    metadata.seasons = filtered_tmdb_seasons
+                
+                # Organize the show
+                success = self.organize_show(tv_show)
+                return show_folder.name, success
+            except Exception as e:
+                self.logger.error(f"Error processing show {show_folder.name}: {e}")
+                return show_folder.name, False
+        
+        # Process shows in parallel (max_workers=2)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_to_show = {
+                executor.submit(process_single_show, folder, info, metadata): folder.name
+                for folder, info, metadata in shows_to_process
+            }
+            
+            for future in as_completed(future_to_show):
+                try:
+                    folder_name, success = future.result()
+                    if success:
+                        success_count += 1
+                        self.logger.info(f"{Colors.GREEN}✓ Successfully processed: {folder_name}{Colors.RESET}")
+                    else:
+                        self.logger.error(f"{Colors.RED}✗ Failed to process: {folder_name}{Colors.RESET}")
+                        self.unprocessed_shows.append({
+                            'folder_name': folder_name,
+                            'reason': 'processing error'
+                        })
+                except Exception as e:
+                    folder_name = future_to_show[future]
+                    self.logger.error(f"Error in parallel processing for {folder_name}: {e}")
+                    self.unprocessed_shows.append({
+                        'folder_name': folder_name,
+                        'reason': f'error: {str(e)}'
+                    })
         
         return success_count > 0
     
@@ -507,6 +822,14 @@ class MediaLibraryOrganizer:
             self.logger.info(f"Errors: {Colors.GREEN}0{Colors.RESET}")
         
         self.logger.info(f"Duration: {Colors.CYAN}{duration}{Colors.RESET}")
+        
+        # Print unprocessed shows summary
+        if self.unprocessed_shows:
+            self.logger.info(f"\n{Colors.BOLD}Unprocessed Shows:{Colors.RESET}")
+            for item in self.unprocessed_shows:
+                self.logger.info(f"  {Colors.YELLOW}{item['folder_name']}{Colors.RESET}: {item['reason']}")
+        else:
+            self.logger.info(f"\n{Colors.GREEN}All shows processed successfully!{Colors.RESET}")
         
         if self.dry_run:
             self.logger.info(f"\n{Colors.YELLOW}This was a DRY RUN - no files were actually moved.{Colors.RESET}")
@@ -553,7 +876,7 @@ Examples:
     args = parser.parse_args()
     
     try:
-        organizer = MediaLibraryOrganizer(
+        organizer = TVShowOrganizer(
             input_dir=args.input_dir,
             output_dir=args.output_dir,
             dry_run=args.dry_run,

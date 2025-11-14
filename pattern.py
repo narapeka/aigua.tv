@@ -385,8 +385,18 @@ def extract_episode_info(filename: str, position: int = 1) -> Tuple[int, int, Op
     return season_num, position, None
 
 
-def generate_filename(episode: Episode) -> str:
-    """Generate Emby-compatible filename"""
+def generate_filename(episode: Episode, tmdb_show_name: Optional[str] = None) -> str:
+    """
+    Generate Emby-compatible filename using TMDB show name and episode titles when available
+    
+    Args:
+        episode: Episode object
+        tmdb_show_name: Optional TMDB show name (if None, uses episode.show_name)
+    
+    Returns:
+        Formatted filename: {tmdb_show_name} - S{season:02d}E{episode:02d} - {tmdb_episode_title}.{ext}
+        or {tmdb_show_name} - S{season:02d}E{episode:02d}.{ext} if TMDB title not available
+    """
     season_str = f"S{episode.season_number:02d}"
     if episode.end_episode_number:
         # Multi-episode file: show range like S01E01-E02
@@ -394,8 +404,17 @@ def generate_filename(episode: Episode) -> str:
     else:
         episode_str = f"E{episode.episode_number:02d}"
     
-    # Clean show name for filename
-    clean_show_name = re.sub(r'[<>:"/\\|?*]', '', episode.show_name)
+    # Use TMDB show name if provided, otherwise fallback to episode.show_name
+    show_name = tmdb_show_name if tmdb_show_name else episode.show_name
     
-    return f"{clean_show_name} - {season_str}{episode_str} - {episode.title}{episode.extension}"
+    # Clean show name for filename
+    clean_show_name = re.sub(r'[<>:"/\\|?*]', '', show_name)
+    
+    # Use TMDB episode title if available, otherwise use format without title
+    if episode.tmdb_title:
+        # Format: {tmdb_show_name} - S{season:02d}E{episode:02d} - {tmdb_episode_title}.{ext}
+        return f"{clean_show_name} - {season_str}{episode_str} - {episode.tmdb_title}{episode.extension}"
+    else:
+        # Format: {tmdb_show_name} - S{season:02d}E{episode:02d}.{ext}
+        return f"{clean_show_name} - {season_str}{episode_str}{episode.extension}"
 

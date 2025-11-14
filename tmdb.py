@@ -584,7 +584,7 @@ class TMDBClient:
             result: TVShowMetadata result
             folder_name: Original folder name
             input_name: Input name used for search
-            input_year: Input year used for search
+            input_year: Input year used for search (from LLM extraction)
             all_results_count: Total number of results from search
             tmdb_info: Full TMDB info including alternative_titles and translations
             
@@ -594,12 +594,20 @@ class TMDBClient:
         self.logger.info(f"Checking match confidence for: {result.name} (ID: {result.id})")
         self.logger.debug(f"  Folder name: {folder_name}")
         self.logger.debug(f"  Input name: {input_name}")
-        self.logger.debug(f"  Input year: {input_year}")
+        self.logger.debug(f"  Input year (from LLM): {input_year}")
+        self.logger.debug(f"  TMDB year: {result.year}")
         self.logger.debug(f"  Total search results: {all_results_count}")
         
-        # If single result, it's high confidence
+        # Check year mismatch first - if years don't match, downgrade to low confidence
+        if input_year and result.year:
+            if input_year != result.year:
+                self.logger.warning(f"  → Confidence: LOW (year mismatch: LLM year={input_year}, TMDB year={result.year})")
+                return "low"
+            self.logger.debug(f"  Year match confirmed: {input_year} == {result.year}")
+        
+        # If single result and year matches (or no year provided), it's high confidence
         if all_results_count == 1:
-            self.logger.info(f"  → Confidence: HIGH (single result returned)")
+            self.logger.info(f"  → Confidence: HIGH (single result returned, year matches)")
             return "high"
         
         self.logger.debug(f"  Multiple results ({all_results_count}), checking for exact matches...")
@@ -642,11 +650,13 @@ class TMDBClient:
                 name_lower = name.lower()
                 if name_lower in folder_name_lower:
                     matching_names.append(name)
-                    self.logger.info(f"  → Confidence: HIGH (name '{name}' found in folder_name '{folder_name}')")
+                    # Year already checked above, so if we reach here and year matches, it's high confidence
+                    self.logger.info(f"  → Confidence: HIGH (name '{name}' found in folder_name '{folder_name}', year matches)")
                     return "high"
         
         if matching_names:
-            self.logger.info(f"  → Confidence: HIGH (found {len(matching_names)} matching names in folder_name)")
+            # Year already checked above, so if we reach here and year matches, it's high confidence
+            self.logger.info(f"  → Confidence: HIGH (found {len(matching_names)} matching names in folder_name, year matches)")
             return "high"
         
         # If we have multiple results but no strong match, return low
@@ -773,10 +783,11 @@ class TMDBClient:
                     
                     # Set all extended fields
                     result.folder_name = folder_name
-                    result.cn_name = cn_name
-                    result.en_name = en_name
-                    result.year = year or self._extract_year_from_date(result.first_air_date)
-                    result.tmdbid = tmdbid
+                    # Don't override cn_name and en_name - they're already handled correctly
+                    # Always use year from TMDB result (already extracted from first_air_date)
+                    result.year = result.year
+                    # Always use TMDB ID from TMDB result
+                    result.tmdbid = result.id
                     result.search_language = search_language
                     
                     self.logger.info(f"Successfully retrieved TV show data for: {result.name} (confidence: high, from TMDB ID)")
@@ -897,10 +908,11 @@ class TMDBClient:
                 self.logger.debug(f"Match confidence is {confidence}, not proceeding with season/episode fetch")
                 # Still return the result but without seasons/episodes
                 result.folder_name = folder_name
-                result.cn_name = cn_name
-                result.en_name = en_name
-                result.year = year or self._extract_year_from_date(result.first_air_date)
-                result.tmdbid = tmdbid or result.id
+                # Don't override cn_name and en_name - they're already handled correctly
+                # Always use year from TMDB result (already extracted from first_air_date)
+                result.year = result.year
+                # Always use TMDB ID from TMDB result
+                result.tmdbid = result.id
                 result.search_language = search_language
                 return result
             
@@ -911,10 +923,11 @@ class TMDBClient:
             
             # Set all extended fields
             result.folder_name = folder_name
-            result.cn_name = cn_name
-            result.en_name = en_name
-            result.year = year or self._extract_year_from_date(result.first_air_date)
-            result.tmdbid = tmdbid or result.id
+            # Don't override cn_name and en_name - they're already handled correctly
+            # Always use year from TMDB result (already extracted from first_air_date)
+            result.year = result.year
+            # Always use TMDB ID from TMDB result
+            result.tmdbid = result.id
             result.search_language = search_language
             
             self.logger.info(f"Successfully retrieved TV show data for: {result.name} (confidence: {confidence})")
