@@ -180,40 +180,106 @@ class TMDBClient:
         
         self.last_request_time = time.time()
     
-    def search_tv_show(self, query: str, year: Optional[int] = None) -> List[TVShowMetadata]:
+    def search_tv_show(self, query: str, year: Optional[int] = None, max_pages: int = 3, initial_pages_only: int = 1) -> List[TVShowMetadata]:
         """
-        Search for TV shows by name
+        Search for TV shows by name with pagination support
         
         Args:
             query: TV show name to search for
             year: Optional year to filter results
+            max_pages: Maximum number of pages to fetch (default: 3, i.e., up to 60 results)
+            initial_pages_only: Only fetch this many pages initially (default: 1). Use max_pages to fetch more.
             
         Returns:
             List of TVShowMetadata objects
         """
         try:
-            self.logger.debug(f"Searching TMDB for TV show: {query}" + (f" (year: {year})" if year else ""))
+            pages_to_fetch = min(initial_pages_only, max_pages)
+            self.logger.debug(f"Searching TMDB for TV show: {query}" + (f" (year: {year})" if year else "") + f" (pages: {pages_to_fetch}/{max_pages})")
             
-            # Enforce rate limiting before making the API request
-            self._wait_for_rate_limit()
+            all_results = []
+            original_first_page_size = 0  # Track original page size before filtering
             
-            results = self.tv.search(query)
-            
-            if not results:
-                self.logger.debug(f"No results found for: {query}")
-                return []
-            
-            # Filter by year if provided
-            if year:
-                results = [
-                    r for r in results
-                    if r.get('first_air_date') and 
-                    r['first_air_date'].startswith(str(year))
-                ]
+            # Fetch pages of results (only initial_pages_only initially)
+            for page in range(1, pages_to_fetch + 1):
+                # Enforce rate limiting before making the API request
+                self._wait_for_rate_limit()
+                
+                try:
+                    # Try to get paginated results
+                    # The tmdbv3api library may support page parameter via kwargs
+                    raw_page_results = self.tv.search(query, page=page)
+                    
+                    if not raw_page_results:
+                        # No more results, stop pagination
+                        if page == 1:
+                            self.logger.debug(f"No results found for: {query}")
+                            return []
+                        break
+                    
+                    # Track original page size for first page (before filtering)
+                    if page == 1:
+                        original_first_page_size = len(raw_page_results)
+                    
+                    # Filter by year if provided
+                    if year:
+                        page_results = [
+                            r for r in raw_page_results
+                            if r.get('first_air_date') and 
+                            r['first_air_date'].startswith(str(year))
+                        ]
+                    else:
+                        page_results = raw_page_results
+                    
+                    if not page_results:
+                        # No results after year filtering, but might have more pages
+                        # Continue to next page if this is first page, otherwise stop
+                        if page == 1:
+                            continue
+                        else:
+                            break
+                    
+                    all_results.extend(page_results)
+                    
+                    # If we got fewer than 20 results in the original (unfiltered) page, we've reached the last page
+                    if len(raw_page_results) < 20:
+                        break
+                        
+                except TypeError:
+                    # Library doesn't support page parameter, fall back to single page
+                    if page == 1:
+                        # Enforce rate limiting before making the API request
+                        self._wait_for_rate_limit()
+                        raw_results = self.tv.search(query)
+                        
+                        if not raw_results:
+                            self.logger.debug(f"No results found for: {query}")
+                            return []
+                        
+                        # Track original page size for first page (before filtering)
+                        original_first_page_size = len(raw_results)
+                        
+                        # Filter by year if provided
+                        if year:
+                            results = [
+                                r for r in raw_results
+                                if r.get('first_air_date') and 
+                                r['first_air_date'].startswith(str(year))
+                            ]
+                        else:
+                            results = raw_results
+                        
+                        all_results = results
+                    break
+                except Exception as e:
+                    self.logger.warning(f"Error fetching page {page} for '{query}': {e}")
+                    if page == 1:
+                        return []
+                    break
             
             # Convert to TVShowMetadata objects
             metadata_list = []
-            for result in results:
+            for result in all_results:
                 try:
                     metadata = self._parse_tv_show_result(result)
                     metadata_list.append(metadata)
@@ -221,7 +287,7 @@ class TMDBClient:
                     self.logger.warning(f"Failed to parse TV show result: {e}")
                     continue
             
-            self.logger.debug(f"Found {len(metadata_list)} results for: {query}")
+            self.logger.debug(f"Found {len(metadata_list)} results for: {query} (from {len(all_results)} raw results)")
             return metadata_list
             
         except Exception as e:
@@ -463,18 +529,22 @@ class TMDBClient:
         self, 
         query: str, 
         year: Optional[int] = None, 
-        languages: Optional[List[str]] = None
-    ) -> Optional[Tuple[TVShowMetadata, str]]:
+        languages: Optional[List[str]] = None,
+        max_pages: int = 3,
+        initial_pages_only: int = 1
+    ) -> Optional[Tuple[List[TVShowMetadata], str]]:
         """
-        Search for TV show using multiple languages, stopping at first result
+        Search for TV show using multiple languages, returning all results with pagination
         
         Args:
             query: TV show name to search for
             year: Optional year to filter results
             languages: List of languages to try (defaults to self.languages)
+            max_pages: Maximum number of pages to fetch per language (default: 3, i.e., up to 60 results)
+            initial_pages_only: Only fetch this many pages initially (default: 1). Use max_pages to fetch more.
             
         Returns:
-            Tuple of (TVShowMetadata, language_used) or None if not found
+            Tuple of (List[TVShowMetadata], language_used) or None if not found
         """
         if languages is None:
             languages = self.languages
@@ -484,34 +554,108 @@ class TMDBClient:
         for lang in languages:
             try:
                 self.tmdb.language = lang
-                self.logger.debug(f"Searching TMDB for '{query}' with language {lang}" + (f" (year: {year})" if year else ""))
+                pages_to_fetch = min(initial_pages_only, max_pages)
+                self.logger.debug(f"Searching TMDB for '{query}' with language {lang}" + (f" (year: {year})" if year else "") + f" (pages: {pages_to_fetch}/{max_pages})")
                 
-                # Enforce rate limiting before making the API request
-                self._wait_for_rate_limit()
+                all_results = []
+                original_first_page_size = 0  # Track original page size before filtering
                 
-                results = self.tv.search(query)
+                # Fetch pages of results (only initial_pages_only initially)
+                for page in range(1, pages_to_fetch + 1):
+                    # Enforce rate limiting before making the API request
+                    self._wait_for_rate_limit()
+                    
+                    try:
+                        # Try to get paginated results
+                        raw_page_results = self.tv.search(query, page=page)
+                        
+                        if not raw_page_results:
+                            # No more results, stop pagination
+                            if page == 1:
+                                break
+                            break
+                        
+                        # Track original page size for first page (before filtering)
+                        if page == 1:
+                            original_first_page_size = len(raw_page_results)
+                        
+                        # Filter by year if provided
+                        if year:
+                            page_results = [
+                                r for r in raw_page_results
+                                if r.get('first_air_date') and 
+                                r['first_air_date'].startswith(str(year))
+                            ]
+                        else:
+                            page_results = raw_page_results
+                        
+                        if not page_results:
+                            # No results after year filtering, but might have more pages
+                            # Continue to next page if this is first page, otherwise stop
+                            if page == 1:
+                                continue
+                            else:
+                                break
+                        
+                        all_results.extend(page_results)
+                        
+                        # If we got fewer than 20 results in the original (unfiltered) page, we've reached the last page
+                        if len(raw_page_results) < 20:
+                            break
+                            
+                    except TypeError:
+                        # Library doesn't support page parameter, fall back to single page
+                        if page == 1:
+                            # Enforce rate limiting before making the API request
+                            self._wait_for_rate_limit()
+                            raw_results = self.tv.search(query)
+                            
+                            if not raw_results:
+                                break
+                            
+                            # Track original page size for first page (before filtering)
+                            original_first_page_size = len(raw_results)
+                            
+                            # Filter by year if provided
+                            if year:
+                                results = [
+                                    r for r in raw_results
+                                    if r.get('first_air_date') and 
+                                    r['first_air_date'].startswith(str(year))
+                                ]
+                            else:
+                                results = raw_results
+                            
+                            all_results = results
+                        break
+                    except Exception as e:
+                        self.logger.warning(f"Error fetching page {page} for '{query}' with language {lang}: {e}")
+                        if page == 1:
+                            break
+                        break
                 
-                if not results:
+                if not all_results:
                     continue
                 
-                # Filter by year if provided
-                filtered_results = results
-                if year:
-                    filtered_results = [
-                        r for r in results
-                        if r.get('first_air_date') and 
-                        r['first_air_date'].startswith(str(year))
-                    ]
-                
-                if not filtered_results:
-                    continue
-                
-                # Convert first result to TVShowMetadata
+                # Convert all results to TVShowMetadata
+                metadata_list = []
                 try:
-                    metadata = self._parse_tv_show_result(filtered_results[0])
+                    for result in all_results:
+                        metadata = self._parse_tv_show_result(result)
+                        metadata_list.append(metadata)
                     self.tmdb.language = original_language
-                    self.logger.debug(f"Found result for '{query}' using language {lang}")
-                    return (metadata, lang)
+                    # Enhanced logging: show original page size vs filtered results
+                    if year and original_first_page_size > 0:
+                        filtered_count = len(metadata_list)
+                        self.logger.debug(
+                            f"Found {filtered_count} results for '{query}' using language {lang} "
+                            f"(original page 1: {original_first_page_size} results, "
+                            f"after year {year} filtering: {filtered_count} results)"
+                        )
+                    else:
+                        self.logger.debug(f"Found {len(metadata_list)} results for '{query}' using language {lang} (from {len(all_results)} raw results)")
+                    # Return metadata list, language, and original first page size
+                    return (metadata_list, lang, original_first_page_size)
                 except Exception as e:
                     self.logger.warning(f"Failed to parse TV show result: {e}")
                     continue
@@ -695,6 +839,129 @@ class TMDBClient:
             self.logger.debug(f"    Input name: '{input_name}'")
         return "low"
     
+    def _evaluate_candidate_confidence(
+        self,
+        candidate: TVShowMetadata,
+        folder_name: str,
+        input_name: Optional[str],
+        input_year: Optional[int],
+        all_results_count: int,
+        folder_type: Optional[str] = None,
+        detected_season: Optional[int] = None
+    ) -> Tuple[TVShowMetadata, str]:
+        """
+        Evaluate confidence for a single candidate by fetching full details and checking confidence
+        
+        Args:
+            candidate: TVShowMetadata candidate to evaluate
+            folder_name: Original folder name
+            input_name: Input name used for search
+            input_year: Input year used for search (from LLM extraction)
+            all_results_count: Total number of results from search
+            folder_type: Folder type - "direct_files" or "season_subfolders" (optional)
+            detected_season: Detected season number (optional)
+            
+        Returns:
+            Tuple of (candidate with full details, confidence_level)
+        """
+        # Get full details including alternative_titles and translations
+        full_details = self._get_full_tv_details(candidate.id)
+        if not full_details:
+            self.logger.warning(f"Could not fetch full details for candidate ID {candidate.id}")
+            return (candidate, "low")
+        
+        # Extract alternative titles and translations with country codes
+        alternative_titles = self._extract_alternative_titles(full_details)
+        candidate.alternative_titles = alternative_titles
+        
+        translations = self._extract_translations(full_details)
+        candidate.translations = translations
+        
+        # Ensure Chinese name if needed
+        self._ensure_chinese_name(candidate, full_details)
+        
+        # Check match confidence
+        confidence = self._check_match_confidence(
+            candidate, folder_name, input_name, input_year, all_results_count, full_details,
+            folder_type=folder_type, detected_season=detected_season
+        )
+        candidate.match_confidence = confidence
+        
+        return (candidate, confidence)
+    
+    def _process_candidates_with_fallback(
+        self,
+        candidates: List[TVShowMetadata],
+        folder_name: str,
+        input_name: Optional[str],
+        input_year: Optional[int],
+        search_language: str,
+        folder_type: Optional[str] = None,
+        detected_season: Optional[int] = None
+    ) -> Optional[Tuple[TVShowMetadata, str]]:
+        """
+        Process candidates with fallback: check first candidate, if not high confidence, check others
+        
+        Args:
+            candidates: List of candidate TVShowMetadata objects
+            folder_name: Original folder name
+            input_name: Input name used for search
+            input_year: Input year used for search
+            search_language: Language used for search
+            folder_type: Folder type - "direct_files" or "season_subfolders" (optional)
+            detected_season: Detected season number (optional)
+            
+        Returns:
+            Tuple of (best TVShowMetadata, confidence_level) or None if no candidates
+        """
+        if not candidates:
+            return None
+        
+        all_results_count = len(candidates)
+        input_name_for_check = input_name
+        
+        # Evaluate first candidate
+        first_candidate = candidates[0]
+        self.logger.info(f"Evaluating first candidate: {first_candidate.name} (ID: {first_candidate.id})")
+        evaluated_candidate, confidence = self._evaluate_candidate_confidence(
+            first_candidate, folder_name, input_name_for_check, input_year, all_results_count,
+            folder_type=folder_type, detected_season=detected_season
+        )
+        
+        # If first candidate has high confidence, return it immediately (fast path)
+        if confidence == "high":
+            self.logger.info(f"First candidate has high confidence, using it: {evaluated_candidate.name}")
+            return (evaluated_candidate, confidence)
+        
+        # First candidate doesn't have high confidence, check other candidates
+        self.logger.info(f"First candidate has {confidence} confidence, checking {len(candidates) - 1} other candidates...")
+        best_candidate = evaluated_candidate
+        best_confidence = confidence
+        
+        # Evaluate remaining candidates
+        for i, candidate in enumerate(candidates[1:], start=2):
+            self.logger.info(f"Evaluating candidate {i}/{len(candidates)}: {candidate.name} (ID: {candidate.id})")
+            evaluated_candidate, candidate_confidence = self._evaluate_candidate_confidence(
+                candidate, folder_name, input_name_for_check, input_year, all_results_count,
+                folder_type=folder_type, detected_season=detected_season
+            )
+            
+            # If we find a high confidence match, use it immediately
+            if candidate_confidence == "high":
+                self.logger.info(f"Found high confidence match in candidate {i}: {evaluated_candidate.name}")
+                return (evaluated_candidate, candidate_confidence)
+            
+            # Track the best candidate so far (high > medium > low)
+            confidence_order = {"high": 3, "medium": 2, "low": 1}
+            if confidence_order.get(candidate_confidence, 0) > confidence_order.get(best_confidence, 0):
+                best_candidate = evaluated_candidate
+                best_confidence = candidate_confidence
+                self.logger.debug(f"  Candidate {i} has better confidence ({candidate_confidence}) than previous best ({best_confidence})")
+        
+        # Return the best candidate found (or first if all have same confidence)
+        self.logger.info(f"Using best candidate with {best_confidence} confidence: {best_candidate.name}")
+        return (best_candidate, best_confidence)
+    
     def _fetch_seasons_and_episodes(self, tv_id: int, language: str) -> List[Season]:
         """
         Fetch all seasons and episodes for a TV show
@@ -860,51 +1127,155 @@ class TMDBClient:
             if not result and cn_name:
                 self.logger.debug(f"Searching with cn_name: {cn_name}, year: {use_year_in_search}")
                 # First try with year (or without if season > 1)
-                search_result = self._search_with_languages(cn_name, use_year_in_search, self.languages)
+                # Fetch only page 1 initially (efficient - only fetch more if needed)
+                search_result = self._search_with_languages(cn_name, use_year_in_search, self.languages, max_pages=3, initial_pages_only=1)
                 if search_result:
-                    result, search_language = search_result
-                    # Count total results for confidence checking
-                    original_lang = self.tmdb.language
-                    try:
-                        self.tmdb.language = search_language
-                        # Enforce rate limiting before making the API request
-                        self._wait_for_rate_limit()
-                        all_results = self.tv.search(cn_name)
-                        if use_year_in_search:
-                            all_results = [r for r in all_results if r.get('first_air_date') and r['first_air_date'].startswith(str(use_year_in_search))]
-                        all_results_count = len(all_results) if all_results else 1
-                    except:
-                        all_results_count = 1
-                    finally:
-                        self.tmdb.language = original_lang
+                    candidates, search_language, original_page_size = search_result
+                    # Enhanced logging: show pagination context
+                    if use_year_in_search:
+                        self.logger.debug(
+                            f"Page 1 search results: {len(candidates)} candidates after year filtering "
+                            f"(original page 1 had {original_page_size} results)"
+                        )
+                    else:
+                        self.logger.debug(
+                            f"Page 1 search results: {len(candidates)} candidates "
+                            f"(original page 1 had {original_page_size} results)"
+                        )
+                    
+                    # Process candidates with fallback
+                    candidate_result = self._process_candidates_with_fallback(
+                        candidates, folder_name, cn_name, year, search_language,
+                        folder_type=folder_type, detected_season=detected_season
+                    )
+                    if candidate_result:
+                        result, confidence = candidate_result
+                        result.match_confidence = confidence
+                        
+                        # If no candidate from page 1 had high confidence, fetch more pages and re-evaluate
+                        # But only if the original page had 20 results (indicating there might be more pages)
+                        if confidence != "high" and original_page_size >= 20:
+                            self.logger.info(
+                                f"No high confidence match found in page 1 (best was {confidence}). "
+                                f"Original page 1 had {original_page_size} results (>=20), so more pages may exist. "
+                                f"Fetching additional pages for more candidates..."
+                            )
+                            # Fetch all pages now (using the same language that worked)
+                            full_search_result = self._search_with_languages(cn_name, use_year_in_search, [search_language], max_pages=3, initial_pages_only=3)
+                            if full_search_result:
+                                all_candidates, _, _ = full_search_result
+                                self.logger.debug(
+                                    f"Fetched all pages: found {len(all_candidates)} total candidates "
+                                    f"(was {len(candidates)} on page 1)"
+                                )
+                                # Re-process with all candidates
+                                candidate_result = self._process_candidates_with_fallback(
+                                    all_candidates, folder_name, cn_name, year, search_language,
+                                    folder_type=folder_type, detected_season=detected_season
+                                )
+                                if candidate_result:
+                                    result, confidence = candidate_result
+                                    result.match_confidence = confidence
+                                    all_results_count = len(all_candidates)
+                                else:
+                                    all_results_count = len(candidates)
+                            else:
+                                all_results_count = len(candidates)
+                        else:
+                            all_results_count = len(candidates)
                 
                 # If no result with year, try without year
                 if not result:
                     self.logger.debug(f"No result with year, trying without year")
-                    search_result = self._search_with_languages(cn_name, None, self.languages)
+                    search_result = self._search_with_languages(cn_name, None, self.languages, max_pages=3, initial_pages_only=1)
                     if search_result:
-                        result, search_language = search_result
-                        # Count total results
-                        original_lang = self.tmdb.language
-                        try:
-                            self.tmdb.language = search_language
-                            # Enforce rate limiting before making the API request
-                            self._wait_for_rate_limit()
-                            all_results = self.tv.search(cn_name)
-                            all_results_count = len(all_results) if all_results else 1
-                        except:
-                            all_results_count = 1
-                        finally:
-                            self.tmdb.language = original_lang
+                        candidates, search_language, original_page_size = search_result
+                        self.logger.debug(
+                            f"Page 1 search results (no year filter): {len(candidates)} candidates "
+                            f"(original page 1 had {original_page_size} results)"
+                        )
+                        # Process candidates with fallback
+                        candidate_result = self._process_candidates_with_fallback(
+                            candidates, folder_name, cn_name, year, search_language,
+                            folder_type=folder_type, detected_season=detected_season
+                        )
+                        if candidate_result:
+                            result, confidence = candidate_result
+                            result.match_confidence = confidence
+                            
+                            # If no candidate from page 1 had high confidence, fetch more pages and re-evaluate
+                            # But only if the original page had 20 results (indicating there might be more pages)
+                            if confidence != "high" and original_page_size >= 20:
+                                self.logger.info(
+                                    f"No high confidence match found in page 1 (best was {confidence}). "
+                                    f"Original page 1 had {original_page_size} results (>=20), so more pages may exist. "
+                                    f"Fetching additional pages for more candidates..."
+                                )
+                                full_search_result = self._search_with_languages(cn_name, None, [search_language], max_pages=3, initial_pages_only=3)
+                                if full_search_result:
+                                    all_candidates, _, _ = full_search_result
+                                    self.logger.debug(
+                                        f"Fetched all pages: found {len(all_candidates)} total candidates "
+                                        f"(was {len(candidates)} on page 1)"
+                                    )
+                                    candidate_result = self._process_candidates_with_fallback(
+                                        all_candidates, folder_name, cn_name, year, search_language,
+                                        folder_type=folder_type, detected_season=detected_season
+                                    )
+                                    if candidate_result:
+                                        result, confidence = candidate_result
+                                        result.match_confidence = confidence
+                                        all_results_count = len(all_candidates)
+                                    else:
+                                        all_results_count = len(candidates)
+                                else:
+                                    all_results_count = len(candidates)
+                            else:
+                                all_results_count = len(candidates)
             
             # Strategy 3: If cn_name is None but en_name is provided, search with year
             if not result and en_name:
                 self.logger.debug(f"Searching with en_name: {en_name}, year: {use_year_in_search}")
-                results = self.search_tv_show(en_name, use_year_in_search)
+                results = self.search_tv_show(en_name, use_year_in_search, max_pages=3, initial_pages_only=1)
                 if results:
-                    result = results[0]
-                    search_language = self.language
-                    all_results_count = len(results)
+                    # Process candidates with fallback
+                    candidate_result = self._process_candidates_with_fallback(
+                        results, folder_name, en_name, year, self.language,
+                        folder_type=folder_type, detected_season=detected_season
+                    )
+                    if candidate_result:
+                        result, confidence = candidate_result
+                        result.match_confidence = confidence
+                        
+                        # If no candidate from page 1 had high confidence, fetch more pages and re-evaluate
+                        # But only if we got 20 results (indicating there might be more pages)
+                        if confidence != "high" and len(results) >= 20:
+                            self.logger.info(
+                                f"No high confidence match found in page 1 (best was {confidence}). "
+                                f"Page 1 had {len(results)} results (>=20), so more pages may exist. "
+                                f"Fetching additional pages for more candidates..."
+                            )
+                            all_results = self.search_tv_show(en_name, use_year_in_search, max_pages=3, initial_pages_only=3)
+                            if all_results:
+                                self.logger.debug(
+                                    f"Fetched all pages: found {len(all_results)} total candidates "
+                                    f"(was {len(results)} on page 1)"
+                                )
+                                candidate_result = self._process_candidates_with_fallback(
+                                    all_results, folder_name, en_name, year, self.language,
+                                    folder_type=folder_type, detected_season=detected_season
+                                )
+                                if candidate_result:
+                                    result, confidence = candidate_result
+                                    result.match_confidence = confidence
+                                    all_results_count = len(all_results)
+                                else:
+                                    all_results_count = len(results)
+                            else:
+                                all_results_count = len(results)
+                        else:
+                            all_results_count = len(results)
+                        search_language = self.language
             
             # Strategy 4: If no result, search without year, try multiple languages if name is Chinese
             if not result:
@@ -913,58 +1284,103 @@ class TMDBClient:
                     self.logger.debug(f"Searching without year: {search_name}")
                     if cn_name:
                         # Try multiple languages for Chinese name
-                        search_result = self._search_with_languages(search_name, None, self.languages)
+                        search_result = self._search_with_languages(search_name, None, self.languages, max_pages=3, initial_pages_only=1)
                         if search_result:
-                            result, search_language = search_result
-                            # Count total results
-                            original_lang = self.tmdb.language
-                            try:
-                                self.tmdb.language = search_language
-                                # Enforce rate limiting before making the API request
-                                self._wait_for_rate_limit()
-                                all_results = self.tv.search(search_name)
-                                all_results_count = len(all_results) if all_results else 1
-                            except:
-                                all_results_count = 1
-                            finally:
-                                self.tmdb.language = original_lang
+                            candidates, search_language, original_page_size = search_result
+                            self.logger.debug(
+                                f"Page 1 search results (no year filter): {len(candidates)} candidates "
+                                f"(original page 1 had {original_page_size} results)"
+                            )
+                            # Process candidates with fallback
+                            candidate_result = self._process_candidates_with_fallback(
+                                candidates, folder_name, cn_name, year, search_language,
+                                folder_type=folder_type, detected_season=detected_season
+                            )
+                            if candidate_result:
+                                result, confidence = candidate_result
+                                result.match_confidence = confidence
+                                
+                                # If no candidate from page 1 had high confidence, fetch more pages and re-evaluate
+                                # But only if the original page had 20 results (indicating there might be more pages)
+                                if confidence != "high" and original_page_size >= 20:
+                                    self.logger.info(
+                                        f"No high confidence match found in page 1 (best was {confidence}). "
+                                        f"Original page 1 had {original_page_size} results (>=20), so more pages may exist. "
+                                        f"Fetching additional pages for more candidates..."
+                                    )
+                                    full_search_result = self._search_with_languages(search_name, None, [search_language], max_pages=3, initial_pages_only=3)
+                                    if full_search_result:
+                                        all_candidates, _, _ = full_search_result
+                                        self.logger.debug(
+                                            f"Fetched all pages: found {len(all_candidates)} total candidates "
+                                            f"(was {len(candidates)} on page 1)"
+                                        )
+                                        candidate_result = self._process_candidates_with_fallback(
+                                            all_candidates, folder_name, cn_name, year, search_language,
+                                            folder_type=folder_type, detected_season=detected_season
+                                        )
+                                        if candidate_result:
+                                            result, confidence = candidate_result
+                                            result.match_confidence = confidence
+                                            all_results_count = len(all_candidates)
+                                        else:
+                                            all_results_count = len(candidates)
+                                    else:
+                                        all_results_count = len(candidates)
+                                else:
+                                    all_results_count = len(candidates)
                     else:
                         # Use default language for English name
-                        results = self.search_tv_show(search_name, None)
+                        results = self.search_tv_show(search_name, None, max_pages=3, initial_pages_only=1)
                         if results:
-                            result = results[0]
-                            search_language = self.language
-                            all_results_count = len(results)
+                            # Process candidates with fallback
+                            candidate_result = self._process_candidates_with_fallback(
+                                results, folder_name, en_name, year, self.language,
+                                folder_type=folder_type, detected_season=detected_season
+                            )
+                            if candidate_result:
+                                result, confidence = candidate_result
+                                result.match_confidence = confidence
+                                
+                                # If no candidate from page 1 had high confidence, fetch more pages and re-evaluate
+                                # But only if we got 20 results (indicating there might be more pages)
+                                if confidence != "high" and len(results) >= 20:
+                                    self.logger.info(
+                                        f"No high confidence match found in page 1 (best was {confidence}). "
+                                        f"Page 1 had {len(results)} results (>=20), so more pages may exist. "
+                                        f"Fetching additional pages for more candidates..."
+                                    )
+                                    all_results = self.search_tv_show(search_name, None, max_pages=3, initial_pages_only=3)
+                                    if all_results:
+                                        self.logger.debug(
+                                            f"Fetched all pages: found {len(all_results)} total candidates "
+                                            f"(was {len(results)} on page 1)"
+                                        )
+                                    if all_results:
+                                        candidate_result = self._process_candidates_with_fallback(
+                                            all_results, folder_name, en_name, year, self.language,
+                                            folder_type=folder_type, detected_season=detected_season
+                                        )
+                                        if candidate_result:
+                                            result, confidence = candidate_result
+                                            result.match_confidence = confidence
+                                            all_results_count = len(all_results)
+                                        else:
+                                            all_results_count = len(results)
+                                    else:
+                                        all_results_count = len(results)
+                                else:
+                                    all_results_count = len(results)
+                                search_language = self.language
             
             # If no result found, return None
             if not result:
                 self.logger.debug(f"No TV show found for folder: {folder_name}")
                 return None
             
-            # Get full details including alternative_titles and translations
-            full_details = self._get_full_tv_details(result.id)
-            if not full_details:
-                self.logger.warning(f"Could not fetch full details for TV show ID {result.id}")
-                return None
-            
-            # Extract alternative titles and translations with country codes
-            alternative_titles = self._extract_alternative_titles(full_details)
-            result.alternative_titles = alternative_titles
-            
-            translations = self._extract_translations(full_details)
-            result.translations = translations
-            
-            # Ensure Chinese name if needed
-            self._ensure_chinese_name(result, full_details)
-            
-            # Check match confidence
-            input_name = cn_name if cn_name else en_name
-            self.logger.info(f"Evaluating match confidence for result: {result.name} (ID: {result.id})")
-            confidence = self._check_match_confidence(
-                result, folder_name, input_name, year, all_results_count, full_details,
-                folder_type=folder_type, detected_season=detected_season
-            )
-            result.match_confidence = confidence
+            # Result already has full details and confidence set from _process_candidates_with_fallback()
+            # Get confidence from result
+            confidence = result.match_confidence
             self.logger.info(f"Final confidence level: {confidence}")
             
             # SPECIAL VALIDATION: If folder_type is DIRECT_FILES and detected_season > 1,

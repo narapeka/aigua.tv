@@ -243,16 +243,35 @@ class LLMAgent:
                 # Enforce rate limiting before making the API request
                 self._wait_for_rate_limit()
                 
+                # Create the user prompt
+                user_prompt = self._create_extraction_prompt(chunk)
+                
+                # Log LLM input in verbose mode
+                self.logger.debug("=" * 80)
+                self.logger.debug(f"LLM Request for chunk {chunk_num}/{total_chunks}:")
+                self.logger.debug(f"  Model: {self.model}")
+                self.logger.debug(f"  System Prompt ({len(self.system_prompt)} chars):")
+                self.logger.debug(f"    {self.system_prompt[:200]}..." if len(self.system_prompt) > 200 else f"    {self.system_prompt}")
+                self.logger.debug(f"  User Prompt ({len(user_prompt)} chars):")
+                self.logger.debug(f"    {user_prompt}")
+                self.logger.debug(f"  Folder names in chunk: {chunk}")
+                
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[
                         {"role": "system", "content": self.system_prompt},
-                        {"role": "user", "content": self._create_extraction_prompt(chunk)}
+                        {"role": "user", "content": user_prompt}
                     ],
                     temperature=0.1  # Low temperature for consistent extraction
                 )
                 
                 response_text = response.choices[0].message.content
+                
+                # Log LLM output in verbose mode
+                self.logger.debug(f"  LLM Response ({len(response_text)} chars):")
+                self.logger.debug(f"    {response_text}")
+                self.logger.debug("=" * 80)
+                
                 chunk_results = self._parse_llm_response(response_text, chunk)
                 all_results.extend(chunk_results)
                 

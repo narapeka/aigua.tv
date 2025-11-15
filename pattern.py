@@ -28,17 +28,101 @@ EPISODE_PATTERNS = [
     r'(\d+)[xX](\d+)',  # 1x01 format
     r'第([一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾\d]+)集',  # 第六十集, 第1集
     r'([一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾]+)集',  # 六十集
+    r'[Ee][Pp](\d+)',  # EP01, EP02 format (season-less, must come before [Ee](?:pisode\s*)? pattern)
     r'[Ee](?:pisode\s*)?(\d+)',  # Episode 01, E01, etc. (season-less)
     r'(\d+)-(\d+)',  # 1-09 format (season-episode or episode with dash)
     r'(?:^|\D)(\d{1,3})(?:\D|$)',  # Any 1-3 digit number (fallback, supports episodes > 99)
 ]
 
+# Metadata patterns to remove from filenames before extracting season/episode numbers
+# Format: (pattern, flags, description)
+# Flags: 0 = no flags, re.IGNORECASE = case-insensitive
+METADATA_PATTERNS = [
+    # Episode count patterns (全xx集) - episode count, not season
+    (r'全\s*\d+\s*集', 0, 'Episode count pattern'),
+    
+    # Video resolutions (1080p, 720p, 480p, etc.)
+    (r'\b(?:1080|720|480|360|240|2160|1440|4320)[pi]?\b', re.IGNORECASE, 'Video resolutions'),
+    # 2K/4K/8K resolution - handle cases where K is followed by Chinese characters or other non-alphanumeric
+    (r'[248]K(?![a-zA-Z0-9])', re.IGNORECASE, '2K/4K/8K resolution'),
+    
+    # Video codecs (H264, H265, x264, x265, HEVC, AVC, etc.)
+    (r'\b(?:H|X|x)26[45]\b', re.IGNORECASE, 'Video codecs (H264/H265)'),
+    (r'\b(?:H\.?26[45]|H\.?266)\b', re.IGNORECASE, 'Video codecs (H.264/H.265/H.266 with dots)'),
+    (r'\b(?:HEVC|AVC|VP9|VP8|VC-?1|MPEG-?2|MPEG-?4|AV1|VVC|ProRes|DNxHD|DNxHR|Xvid|DivX)\b', re.IGNORECASE, 'Video codecs (HEVC/AVC/AV1/VVC/ProRes)'),
+    
+    # Audio codecs and formats
+    (r'\b(?:AAC|AC3|DTS|DDP|E-AC3|FLAC|MP3|OGG|VORBIS|OPUS|PCM|TrueHD|DTS-HD|DTSHD|DTS-HDMA|DTSHDMA|DTSX|DTS:X|Atmos)\b', re.IGNORECASE, 'Audio codecs'),
+    (r'\b(?:DTS-HD\s*MA|DTSHD\s*MA|DTS-HDMA|DTSHDMA)\b', re.IGNORECASE, 'Audio codecs (DTS-HD MA / DTS-HDMA)'),
+    (r'\b(?:DDP|DTS|TrueHD|DTS-HD|DTSHD|DTS-HDMA|DTSHDMA)[\s.]*\d+\.\d+\b', re.IGNORECASE, 'Audio codecs with version (DDP5.1, DTS5.1, DTS.5.1, DTS 5.1, TrueHD7.1, DTS-HDMA5.1)'),
+    (r'\b\d+Audios?\b', re.IGNORECASE, 'Audio track count (11Audios, 2Audio)'),
+
+    # HDR and Dolby Vision formats
+    (r'\b(?:HDR\s*10\+|HDR10\+)\b', re.IGNORECASE, 'HDR formats (HDR10+)'),
+    (r'\b(?:HDR\s*10|HDR10)\b', re.IGNORECASE, 'HDR formats (HDR10)'),
+    (r'\b(?:Dolby\s*Vision|DV)\b', re.IGNORECASE, 'Dolby Vision (DV)'),
+    (r'\bHDR\b', re.IGNORECASE, 'HDR (generic)'),
+
+    # Quality/release type indicators
+    (r'\b(?:WEB-DL|WEBRip|UHD|BluRay|BDRip|DVDRip|HDTV|UHDTV|CAM|TS|TC|SCR|DVDScr)\b', re.IGNORECASE, 'Quality indicators'),
+    
+    # Streaming service abbreviations
+    (r'\b(?:NF|DSNP|AMZN|HMAX|HULU|ATVP|DSPY|HBO|MAX)\b', re.IGNORECASE, 'Streaming services'),
+    
+    # File sizes
+    (r'\b\d+\.\d+\s*(?:GB|MB|TB|KB)\b', re.IGNORECASE, 'File sizes'),
+    
+    # Frame rates
+    (r'\b\d+\s*帧\b', 0, 'Frame rates (Chinese)'),
+    (r'\b\d+fps\b', re.IGNORECASE, 'Frame rates'),
+
+]
+
+
+def normalize_metadata(text: str, preserve_years: bool = True) -> str:
+    """Remove common metadata patterns from text before extracting season/episode numbers.
+    
+    This function removes video/audio codecs, resolutions, quality indicators, and other
+    metadata that could be mistaken for season/episode numbers.
+    
+    Args:
+        text: Input text (filename or folder name)
+        preserve_years: If True, be more careful with years (1900-2099) to avoid removing
+                       years that might be part of show names. If False, remove years more aggressively.
+    
+    Returns:
+        Normalized text with metadata removed (replaced with spaces)
+    """
+    normalized = text
+    
+    # Apply all metadata patterns from METADATA_PATTERNS
+    for pattern, flags, _description in METADATA_PATTERNS:
+        normalized = re.sub(pattern, ' ', normalized, flags=flags)
+    
+    # Handle years (1900-2099) - be careful!
+    # Only remove years if they're clearly in metadata context (after codecs, resolutions, etc.)
+    # or if preserve_years is False
+    if not preserve_years:
+        # Remove standalone years that are likely metadata
+        normalized = re.sub(r'\b(19|20)\d{2}\b', ' ', normalized)
+    else:
+        # Only remove years that are clearly metadata (preceded by common separators and metadata)
+        # This is more conservative - preserves years that might be part of show names
+        metadata_year_pattern = r'(?:WEB-DL|BluRay|1080p|720p|4K|8K|H264|H265|x264|x265|AAC|AC3|DTS)\s+(19|20)\d{2}\b'
+        normalized = re.sub(metadata_year_pattern, ' ', normalized, flags=re.IGNORECASE)
+    
+    # Clean up multiple spaces and trim
+    normalized = re.sub(r'\s+', ' ', normalized)
+    normalized = normalized.strip()
+    
+    return normalized
+
 
 def extract_season_number(text: str, fallback: int = 1) -> int:
     """Extract season number from text using regex patterns including Chinese"""
-    # Normalize text first: remove "全xx集" patterns (episode count, not season)
-    # This prevents numbers from "全10集" from being mistaken as season numbers
-    text = re.sub(r'全\s*\d+\s*集', '', text)
+    # Normalize text first: remove common metadata patterns
+    # This prevents metadata like "4K", "H264", "1080p" from being mistaken as season numbers
+    text = normalize_metadata(text, preserve_years=True)
     
     for pattern_idx, pattern in enumerate(SEASON_PATTERNS):
         match = re.search(pattern, text, re.IGNORECASE)
@@ -55,22 +139,14 @@ def extract_season_number(text: str, fallback: int = 1) -> int:
                 match_start = match.start()
                 match_end = match.end()
                 
-                # Filter out false positives:
+                # Additional safety checks (most metadata should be removed by normalize_metadata,
+                # but keep these as fallback filters for edge cases):
                 # - Years (1900-2099) - check if this number is part of a year
                 if 1900 <= season_num <= 2099:
                     # Look for 4-digit year pattern around the match
                     year_context = text[max(0, match_start-4):min(len(text), match_end+4)]
                     if re.search(r'\b(19|20)\d{2}\b', year_context):
                         continue
-                
-                # - Codec numbers (H264, H265, x264, x265, etc.) - check context
-                # If the number is preceded by H, x, X, or followed by codec-related text, skip it
-                context_before_upper = text[max(0, match_start-2):match_start].upper()
-                context_after_upper = text[match_end:min(len(text), match_end+2)].upper()
-                if (context_before_upper in ['H', 'X', '[H', '(H', '.H', '_H'] or 
-                    context_after_upper in ['4', '5', '6', '8'] or
-                    re.search(r'[HXx]26[45]', text, re.IGNORECASE)):
-                    continue
                 
                 # - For the fallback pattern (last pattern), be extra strict
                 # Check if the number appears to be part of a larger number or year
@@ -104,20 +180,49 @@ def extract_episode_info(filename: str, position: int = 1) -> Tuple[int, int, Op
     episode_num = position
     end_episode_num = None
     
-    # Remove video resolution patterns (1080p, 720p, 480p, etc.) FIRST to prevent them from being
-    # mistaken as episode numbers. This must be done BEFORE space normalization to avoid
-    # cases like "S02E01 1080p" becoming "S02E011080p" which would be parsed incorrectly.
-    # Patterns: 1080p, 720p, 480p, 1080i, 720i, 2160p, 4K, etc.
-    normalized_filename = re.sub(r'\b(?:1080|720|480|360|240|2160|1440|4320)[pi]?\b', ' ', filename, flags=re.IGNORECASE)
-    # Also remove 4K, 8K patterns
-    normalized_filename = re.sub(r'\b[48]K\b', ' ', normalized_filename, flags=re.IGNORECASE)
-    # Clean up multiple spaces
-    normalized_filename = re.sub(r'\s+', ' ', normalized_filename)
+    # Normalize metadata FIRST to prevent metadata from being mistaken as episode numbers.
+    # This must be done BEFORE space normalization to avoid cases like "S02E01 1080p"
+    # becoming "S02E011080p" which would be parsed incorrectly.
+    # Note: preserve_years=False here because we have special year protection logic below
+    normalized_filename = normalize_metadata(filename, preserve_years=False)
     
     # Normalize filename: remove spaces between digits (e.g., "1 8" -> "18")
     # This helps with filenames like "1 8.mp4" which should be episode 18
     # But be careful: don't remove spaces that are between episode patterns and other text
+    # Also don't remove spaces before 4-digit years (1900-2099) as they're likely release years
+    # Strategy: Protect patterns that should keep spaces, then remove spaces between other digits
+    
+    protected = []
+    counter = 0
+    
+    # First protect 4-digit years (1900-2099) - these are likely release years
+    year_pattern = r'(\d+)\s+((?:19|20)\d{2})\b'
+    def replace_year(match):
+        nonlocal counter
+        marker = f"__PROTECTED_{counter}__"
+        protected.append((match.group(0), marker))
+        counter += 1
+        return marker
+    
+    normalized_filename = re.sub(year_pattern, replace_year, normalized_filename)
+    
+    # Then protect episode patterns (E## or S##E##) followed by digits - these are metadata, not part of episode number
+    episode_pattern = r'([ES]\d+[ES]?\d+)\s+(\d+)'
+    def replace_episode(match):
+        nonlocal counter
+        marker = f"__PROTECTED_{counter}__"
+        protected.append((match.group(0), marker))
+        counter += 1
+        return marker
+    
+    normalized_filename = re.sub(episode_pattern, replace_episode, normalized_filename, flags=re.IGNORECASE)
+    
+    # Now remove spaces between digits in unprotected parts
     normalized_filename = re.sub(r'(\d)\s+(\d)', r'\1\2', normalized_filename)
+    
+    # Restore protected patterns
+    for original, marker in protected:
+        normalized_filename = normalized_filename.replace(marker, original)
     
     # First, check for multi-episode patterns like S01E01-S01E02, S01E01E02, etc.
     multi_episode_patterns = [
@@ -221,8 +326,18 @@ def extract_episode_info(filename: str, position: int = 1) -> Tuple[int, int, Op
             except (ValueError, IndexError):
                 continue
     
-    # Try explicit episode patterns (English)
-    episode_pattern = EPISODE_PATTERNS[6]  # r'[Ee](?:pisode\s*)?(\d+)'
+    # Try explicit episode patterns (English) - EP01 format first
+    episode_pattern_ep = EPISODE_PATTERNS[6]  # r'[Ee][Pp](\d+)'
+    match = re.search(episode_pattern_ep, normalized_filename, re.IGNORECASE)
+    if match:
+        try:
+            episode_num = int(match.group(1))
+            return season_num, episode_num, None
+        except (ValueError, IndexError):
+            pass
+    
+    # Try Episode/E01 format
+    episode_pattern = EPISODE_PATTERNS[7]  # r'[Ee](?:pisode\s*)?(\d+)'
     match = re.search(episode_pattern, normalized_filename, re.IGNORECASE)
     if match:
         try:
@@ -234,7 +349,7 @@ def extract_episode_info(filename: str, position: int = 1) -> Tuple[int, int, Op
     # Try dash-separated pattern (e.g., 1-09, 10-20)
     # This is typically just episode number with dash separator
     # For cases like "红蜘蛛1-09.mp4", extract episode 9
-    dash_pattern = EPISODE_PATTERNS[7]  # r'(\d+)-(\d+)'
+    dash_pattern = EPISODE_PATTERNS[8]  # r'(\d+)-(\d+)'
     match = re.search(dash_pattern, normalized_filename, re.IGNORECASE)
     if match:
         try:
@@ -277,7 +392,7 @@ def extract_episode_info(filename: str, position: int = 1) -> Tuple[int, int, Op
             if 1 <= detected_season <= 100:  # Valid season range
                 season_num = detected_season
     
-    number_pattern = EPISODE_PATTERNS[8]  # r'(?:^|\D)(\d{1,3})(?:\D|$)' 
+    number_pattern = EPISODE_PATTERNS[9]  # r'(?:^|\D)(\d{1,3})(?:\D|$)' 
     
     # Find all potential matches and filter out false positives
     all_matches = list(re.finditer(number_pattern, name_without_ext, re.IGNORECASE))
@@ -408,12 +523,17 @@ def generate_filename(episode: Episode, tmdb_show_name: Optional[str] = None) ->
     show_name = tmdb_show_name if tmdb_show_name else episode.show_name
     
     # Clean show name for filename
-    clean_show_name = re.sub(r'[<>:"/\\|?*]', '', show_name)
+    # Convert colon to full-width colon (：), remove other illegal characters
+    clean_show_name = show_name.replace(':', '：')
+    clean_show_name = re.sub(r'[<>"/\\|?*]', '', clean_show_name)
     
     # Use TMDB episode title if available, otherwise use format without title
     if episode.tmdb_title:
+        # Convert colon to full-width colon (：), remove other illegal characters
+        clean_episode_title = episode.tmdb_title.replace(':', '：')
+        clean_episode_title = re.sub(r'[<>"/\\|?*]', '', clean_episode_title)
         # Format: {tmdb_show_name} - S{season:02d}E{episode:02d} - {tmdb_episode_title}.{ext}
-        return f"{clean_show_name} - {season_str}{episode_str} - {episode.tmdb_title}{episode.extension}"
+        return f"{clean_show_name} - {season_str}{episode_str} - {clean_episode_title}{episode.extension}"
     else:
         # Format: {tmdb_show_name} - S{season:02d}E{episode:02d}.{ext}
         return f"{clean_show_name} - {season_str}{episode_str}{episode.extension}"

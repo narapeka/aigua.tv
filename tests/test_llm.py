@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script for agent.py
+Test script for llm.py
 Tests LLM Agent functionality using real config.yaml
 """
 
@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import load_config
-from agent import LLMAgent, TVShowInfo
+from llm import LLMAgent, TVShowInfo
 from logger import setup_logging
 
 
@@ -40,7 +40,7 @@ def test_agent_initialization():
             logger=logger
         )
         
-        print(f"✓ Agent initialized successfully")
+        print(f"[OK] Agent initialized successfully")
         print(f"  API Key: {config.llm.api_key[:10]}...")
         print(f"  Base URL: {config.llm.base_url or 'OpenAI default'}")
         print(f"  Model: {config.llm.model}")
@@ -51,7 +51,7 @@ def test_agent_initialization():
         
         return agent, logger
     except Exception as e:
-        print(f"✗ Failed to initialize agent: {e}")
+        print(f"[FAIL] Failed to initialize agent: {e}")
         import traceback
         traceback.print_exc()
         return None, None
@@ -79,7 +79,7 @@ def test_extract_single_folder(agent: LLMAgent, logger):
             
             if results and len(results) == 1:
                 result = results[0]
-                print(f"    ✓ Extracted:")
+                print(f"    [OK] Extracted:")
                 print(f"      Folder Name: {result.folder_name}")
                 print(f"      CN Name: {result.cn_name}")
                 print(f"      EN Name: {result.en_name}")
@@ -90,11 +90,11 @@ def test_extract_single_folder(agent: LLMAgent, logger):
                 if result.folder_name == folder_name:
                     success_count += 1
                 else:
-                    print(f"      ⚠ Warning: folder_name mismatch")
+                    print(f"      [WARN] Warning: folder_name mismatch")
             else:
-                print(f"    ✗ Unexpected result count: {len(results) if results else 0}")
+                print(f"    [FAIL] Unexpected result count: {len(results) if results else 0}")
         except Exception as e:
-            print(f"    ✗ Error: {e}")
+            print(f"    [FAIL] Error: {e}")
             import traceback
             traceback.print_exc()
     
@@ -123,7 +123,7 @@ def test_extract_multiple_folders(agent: LLMAgent, logger):
         results = agent.extract_tvshow(folder_names)
         
         if results and len(results) == len(folder_names):
-            print(f"✓ Successfully extracted info for {len(results)} folders")
+            print(f"[OK] Successfully extracted info for {len(results)} folders")
             print(f"\n  Results:")
             for i, result in enumerate(results, 1):
                 print(f"    {i}. {result.folder_name}")
@@ -133,22 +133,22 @@ def test_extract_multiple_folders(agent: LLMAgent, logger):
             result_folder_names = {r.folder_name for r in results}
             input_folder_names = set(folder_names)
             if result_folder_names == input_folder_names:
-                print(f"\n  ✓ All folder names matched")
+                print(f"\n  [OK] All folder names matched")
                 return True
             else:
                 missing = input_folder_names - result_folder_names
                 extra = result_folder_names - input_folder_names
-                print(f"\n  ✗ Folder name mismatch:")
+                print(f"\n  [FAIL] Folder name mismatch:")
                 if missing:
                     print(f"    Missing: {missing}")
                 if extra:
                     print(f"    Extra: {extra}")
                 return False
         else:
-            print(f"✗ Unexpected result count: expected {len(folder_names)}, got {len(results) if results else 0}")
+            print(f"[FAIL] Unexpected result count: expected {len(folder_names)}, got {len(results) if results else 0}")
             return False
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"[FAIL] Error: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -181,28 +181,28 @@ def test_batch_processing(agent: LLMAgent, logger):
         if results:
             # The agent normalizes results to match input count, so check for that
             if len(results) == len(folder_names):
-                print(f"✓ Successfully processed {len(results)} folders in batches")
+                print(f"[OK] Successfully processed {len(results)} folders in batches")
             else:
-                print(f"⚠ Result count mismatch: expected {len(folder_names)}, got {len(results)}")
+                print(f"[WARN] Result count mismatch: expected {len(folder_names)}, got {len(results)}")
                 print(f"  (Agent should normalize this - checking if all input folders are present)")
             
             # Check that all results have folder_name
             all_have_folder_name = all(r.folder_name for r in results)
-            print(f"  ✓ All results have folder_name: {all_have_folder_name}")
+            print(f"  [OK] All results have folder_name: {all_have_folder_name}")
             
             # Check for duplicates in results
             result_folder_names = [r.folder_name for r in results]
             unique_names = set(result_folder_names)
             if len(result_folder_names) != len(unique_names):
                 duplicates = len(result_folder_names) - len(unique_names)
-                print(f"  ⚠ Found {duplicates} duplicate folder names in results")
+                print(f"  [WARN] Found {duplicates} duplicate folder names in results")
                 # Show which ones are duplicated
                 counts = Counter(result_folder_names)
                 dupes = {name: count for name, count in counts.items() if count > 1}
                 if dupes:
                     print(f"    Duplicated folders: {list(dupes.keys())[:5]}")  # Show first 5
             else:
-                print(f"  ✓ No duplicate folder names in results")
+                print(f"  [OK] No duplicate folder names in results")
             
             # Verify all input folder names are present in results
             input_set = set(folder_names)
@@ -211,11 +211,11 @@ def test_batch_processing(agent: LLMAgent, logger):
             extra = result_set - input_set
             
             if missing:
-                print(f"  ✗ Missing folders in results: {len(missing)}")
+                print(f"  [FAIL] Missing folders in results: {len(missing)}")
                 print(f"    Sample: {list(missing)[:3]}")
                 return False
             elif extra:
-                print(f"  ⚠ Extra folders in results (not in input): {len(extra)}")
+                print(f"  [WARN] Extra folders in results (not in input): {len(extra)}")
                 print(f"    Sample: {list(extra)[:3]}")
                 # This is acceptable if the agent handles it (which it does via normalization)
             
@@ -224,15 +224,15 @@ def test_batch_processing(agent: LLMAgent, logger):
                 return True
             elif not missing:
                 # Agent normalized it, which is acceptable
-                print(f"  ✓ Agent normalized results to match input count")
+                print(f"  [OK] Agent normalized results to match input count")
                 return True
             else:
                 return False
         else:
-            print(f"✗ No results returned")
+            print(f"[FAIL] No results returned")
             return False
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"[FAIL] Error: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -248,13 +248,13 @@ def test_empty_input(agent: LLMAgent, logger):
         results = agent.extract_tvshow([])
         
         if results == []:
-            print(f"✓ Empty input handled correctly (returned empty list)")
+            print(f"[OK] Empty input handled correctly (returned empty list)")
             return True
         else:
-            print(f"✗ Expected empty list, got: {results}")
+            print(f"[FAIL] Expected empty list, got: {results}")
             return False
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"[FAIL] Error: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -276,7 +276,7 @@ def test_tvshow_info_dataclass(agent: LLMAgent, logger):
             tmdbid=12345
         )
         
-        print(f"✓ Created TVShowInfo object")
+        print(f"[OK] Created TVShowInfo object")
         print(f"  Folder Name: {info.folder_name}")
         print(f"  CN Name: {info.cn_name}")
         print(f"  EN Name: {info.en_name}")
@@ -285,20 +285,20 @@ def test_tvshow_info_dataclass(agent: LLMAgent, logger):
         
         # Test to_dict method
         info_dict = info.to_dict()
-        print(f"\n✓ to_dict() method works")
+        print(f"\n[OK] to_dict() method works")
         print(f"  Dictionary keys: {list(info_dict.keys())}")
         
         # Verify dictionary structure
         expected_keys = {'folder_name', 'cn_name', 'en_name', 'year', 'tmdbid'}
         if set(info_dict.keys()) == expected_keys:
-            print(f"  ✓ All expected keys present")
+            print(f"  [OK] All expected keys present")
         else:
-            print(f"  ✗ Key mismatch")
+            print(f"  [FAIL] Key mismatch")
             return False
         
         # Test with None values
         info_none = TVShowInfo(folder_name="Test Show 2")
-        print(f"\n✓ Created TVShowInfo with None values")
+        print(f"\n[OK] Created TVShowInfo with None values")
         print(f"  CN Name: {info_none.cn_name}")
         print(f"  EN Name: {info_none.en_name}")
         print(f"  Year: {info_none.year}")
@@ -306,7 +306,7 @@ def test_tvshow_info_dataclass(agent: LLMAgent, logger):
         
         return True
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"[FAIL] Error: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -368,7 +368,7 @@ def test_parse_response_edge_cases(agent: LLMAgent, logger):
             
             if results and len(results) > 0:
                 result = results[0]
-                print(f"    ✓ Parsed successfully")
+                print(f"    [OK] Parsed successfully")
                 print(f"      Folder Name: {result.folder_name}")
                 print(f"      CN Name: {result.cn_name}")
                 print(f"      EN Name: {result.en_name}")
@@ -387,37 +387,37 @@ def test_parse_response_edge_cases(agent: LLMAgent, logger):
                 if test_case['should_succeed']:
                     # For successful cases, we should have at least some data
                     if is_graceful_error and test_case['name'] != "Empty strings converted to None":
-                        print(f"    ✗ Expected meaningful data but got all None values")
+                        print(f"    [FAIL] Expected meaningful data but got all None values")
                     else:
                         # Check type conversions for valid cases
                         if test_case['name'] == "Year as string" and isinstance(result.year, int):
-                            print(f"      ✓ Year converted from string to int")
+                            print(f"      [OK] Year converted from string to int")
                         if test_case['name'] == "TMDB ID as string" and isinstance(result.tmdbid, int):
-                            print(f"      ✓ TMDB ID converted from string to int")
+                            print(f"      [OK] TMDB ID converted from string to int")
                         if test_case['name'] == "Empty strings converted to None":
                             if result.cn_name is None and result.en_name is None:
-                                print(f"      ✓ Empty strings converted to None")
+                                print(f"      [OK] Empty strings converted to None")
                         success_count += 1
                 else:
                     # For error cases, graceful handling means returning results with None values
                     if is_graceful_error:
-                        print(f"      ✓ Handled invalid input gracefully (returned results with None values)")
+                        print(f"      [OK] Handled invalid input gracefully (returned results with None values)")
                         success_count += 1
                     else:
-                        print(f"    ⚠ Unexpected: got some data from invalid input")
+                        print(f"    [WARN] Unexpected: got some data from invalid input")
                         success_count += 1  # Still count as success since it didn't crash
             else:
                 if not test_case['should_succeed']:
-                    print(f"    ✓ Handled invalid input gracefully (returned empty list)")
+                    print(f"    [OK] Handled invalid input gracefully (returned empty list)")
                     success_count += 1
                 else:
-                    print(f"    ✗ Expected results but got empty")
+                    print(f"    [FAIL] Expected results but got empty")
         except Exception as e:
             if not test_case['should_succeed']:
-                print(f"    ✓ Exception handled: {e}")
+                print(f"    [OK] Exception handled: {e}")
                 success_count += 1
             else:
-                print(f"    ✗ Unexpected error: {e}")
+                print(f"    [FAIL] Unexpected error: {e}")
                 import traceback
                 traceback.print_exc()
     
@@ -435,26 +435,26 @@ def test_prompt_creation(agent: LLMAgent, logger):
         folder_names = ["Test Show 1", "Test Show 2"]
         prompt = agent._create_extraction_prompt(folder_names)
         
-        print(f"✓ Prompt created successfully")
+        print(f"[OK] Prompt created successfully")
         print(f"  Prompt length: {len(prompt)} characters")
         
         # Check that folder names are in the prompt
         for folder_name in folder_names:
             if folder_name in prompt:
-                print(f"  ✓ '{folder_name}' found in prompt")
+                print(f"  [OK] '{folder_name}' found in prompt")
             else:
-                print(f"  ✗ '{folder_name}' not found in prompt")
+                print(f"  [FAIL] '{folder_name}' not found in prompt")
                 return False
         
         # Check that prompt contains JSON structure
         if "folder_list" in prompt or "Test Show" in prompt:
-            print(f"  ✓ Prompt contains folder list")
+            print(f"  [OK] Prompt contains folder list")
         else:
-            print(f"  ⚠ Prompt structure may be unexpected")
+            print(f"  [WARN] Prompt structure may be unexpected")
         
         return True
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"[FAIL] Error: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -469,7 +469,7 @@ def main():
     # Initialize agent
     agent, logger = test_agent_initialization()
     if not agent:
-        print("\n✗ Cannot proceed without agent initialization")
+        print("\n[FAIL] Cannot proceed without agent initialization")
         return 1
     
     # Run tests
@@ -492,7 +492,7 @@ def main():
     total = len(test_results)
     
     for test_name, result in test_results:
-        status = "✓ PASS" if result else "✗ FAIL"
+        status = "[PASS]" if result else "[FAIL]"
         print(f"{status}: {test_name}")
     
     print(f"\nTotal: {passed}/{total} tests passed")

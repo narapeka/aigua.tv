@@ -50,6 +50,17 @@ class Season:
 
 
 @dataclass
+class FolderStructure:
+    """Represents the structure of a folder (cached to avoid re-scanning)"""
+    folder_path: Path
+    folder_type: FolderType
+    video_files: List[Path] = field(default_factory=list)
+    subdirs: List[Path] = field(default_factory=list)
+    first_file: Optional[Path] = None  # First video file for quick access
+    first_file_name: Optional[str] = None  # First file name for LLM context
+
+
+@dataclass
 class TVShow:
     """Represents a complete TV show with all seasons"""
     name: str

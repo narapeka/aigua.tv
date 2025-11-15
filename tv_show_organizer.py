@@ -21,11 +21,11 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 
 from logger import Colors, setup_logging
 from report import generate_html_report
-from model import FolderType, Episode, Season, TVShow
+from model import FolderType, Episode, Season, TVShow, FolderStructure
 from pattern import generate_filename, extract_season_number, extract_episode_info
-from agent import LLMAgent, TVShowInfo
+from llm import LLMAgent, TVShowInfo
 from tmdb import TMDBClient, TVShowMetadata, create_tmdb_client_from_config
-from cache import TVShowCache
+from cache import TVShowCache, FolderStructureCache
 from config import load_config
 
 class TVShowOrganizer:
@@ -82,6 +82,7 @@ class TVShowOrganizer:
             )
             self.tmdb_client = create_tmdb_client_from_config(self.config, self.logger)
             self.cache = TVShowCache()
+            self.folder_cache = FolderStructureCache()
             self.logger.info(f"{Colors.GREEN}LLM Agent and TMDB Client initialized{Colors.RESET}")
         except Exception as e:
             self.logger.error(f"{Colors.RED}Failed to initialize LLM/TMDB: {e}{Colors.RESET}")
@@ -103,20 +104,88 @@ class TVShowOrganizer:
         self.logger.info(f"Output Directory: {Colors.YELLOW}{self.output_dir}{Colors.RESET}")
         self.logger.info(f"Mode: {Colors.MAGENTA}{'DRY RUN' if dry_run else 'LIVE'}{Colors.RESET}")
         self.logger.info(f"Log File: {Colors.CYAN}{self.log_file}{Colors.RESET}")
+    
+    def _cleanup_old_files(self, keep_count: int = 10):
+        """
+        Clean up old log and HTML report files, keeping only the most recent ones.
         
+        Args:
+            keep_count: Number of most recent files to keep (default: 10)
+        """
+        try:
+            # Find all log files matching the pattern
+            log_files = sorted(
+                self.log_dir.glob("tv_organizer_*.log"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True
+            )
+            
+            # Find all HTML report files matching the pattern
+            html_files = sorted(
+                self.log_dir.glob("tv_organizer_report_*.html"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True
+            )
+            
+            # Delete old log files (keep only the most recent keep_count)
+            deleted_logs = 0
+            for old_log in log_files[keep_count:]:
+                try:
+                    old_log.unlink()
+                    deleted_logs += 1
+                except Exception as e:
+                    # Silently continue if file deletion fails (might be in use)
+                    pass
+            
+            # Delete old HTML files (keep only the most recent keep_count)
+            deleted_html = 0
+            for old_html in html_files[keep_count:]:
+                try:
+                    old_html.unlink()
+                    deleted_html += 1
+                except Exception as e:
+                    # Silently continue if file deletion fails (might be in use)
+                    pass
+            
+            # Log cleanup results (if logger is available, otherwise skip)
+            if hasattr(self, 'logger') and self.logger:
+                if deleted_logs > 0 or deleted_html > 0:
+                    self.logger.info(f"{Colors.CYAN}Cleaned up old files: {deleted_logs} log files, {deleted_html} HTML reports (kept {keep_count} most recent of each){Colors.RESET}")
+        except Exception as e:
+            # Silently fail cleanup - don't break the main process
+            # This could happen if log_dir doesn't exist or permissions are wrong
+            pass
+    
     def is_video_file(self, file_path: Path) -> bool:
         """Check if file is a supported media file (video or subtitle)"""
         return file_path.suffix.lower() in self.MEDIA_EXTENSIONS
     
-    def get_video_files(self, directory: Path) -> List[Path]:
-        """Get all media files (video + subtitles) in a directory"""
+    def get_video_files(self, directory: Path, recursive: bool = False) -> List[Path]:
+        """
+        Get all media files (video + subtitles) in a directory
+        
+        Args:
+            directory: Path to the directory to scan
+            recursive: If True, recursively scan all subdirectories. If False, only scan immediate directory.
+        
+        Returns:
+            List of video file paths, sorted by name
+        """
         if not directory.exists() or not directory.is_dir():
             return []
         
         video_files = []
+        
+        # Get files in immediate directory
         for file_path in directory.iterdir():
             if file_path.is_file() and self.is_video_file(file_path):
                 video_files.append(file_path)
+        
+        # Recursively get files from subdirectories if requested
+        if recursive:
+            for subdir in directory.iterdir():
+                if subdir.is_dir():
+                    video_files.extend(self.get_video_files(subdir, recursive=True))
         
         return sorted(video_files, key=lambda x: x.name.lower())
     
@@ -130,6 +199,7 @@ class TVShowOrganizer:
     def scan_folders(self) -> List[Path]:
         """
         Scan input directory to get all subdirectories (potential TV shows)
+        Also caches folder structures to avoid re-scanning later
         
         Returns:
             List of folder paths
@@ -138,7 +208,104 @@ class TVShowOrganizer:
             return []
         
         show_folders = [d for d in self.input_dir.iterdir() if d.is_dir()]
-        return sorted(show_folders, key=lambda x: x.name.lower())
+        show_folders = sorted(show_folders, key=lambda x: x.name.lower())
+        
+        # Cache folder structures to avoid re-scanning
+        self.logger.debug(f"Caching folder structures for {len(show_folders)} folders...")
+        for folder_path in show_folders:
+            self._cache_folder_structure(folder_path)
+        
+        return show_folders
+    
+    def _cache_folder_structure(self, folder_path: Path, recursive: bool = True) -> None:
+        """
+        Scan and cache folder structure to avoid re-scanning later
+        
+        Args:
+            folder_path: Path to the folder to scan and cache
+            recursive: If True, recursively cache all subdirectories. If False, only cache immediate folder.
+        """
+        cache_key = str(folder_path)
+        
+        # Check if already cached
+        if self.folder_cache.get(cache_key):
+            return
+        
+        try:
+            # Determine folder type
+            folder_type = self.determine_folder_type(folder_path)
+            
+            # Get video files and subdirectories
+            video_files = self.get_video_files(folder_path)
+            subdirs = [d for d in folder_path.iterdir() if d.is_dir()] if folder_path.exists() else []
+            
+            # Get first file for quick access (check immediate files first, then recursively)
+            first_file = video_files[0] if video_files else None
+            first_file_name = first_file.name if first_file else None
+            
+            # If no files in immediate folder and recursive is enabled, find first file recursively
+            if not first_file and recursive and subdirs:
+                first_file, first_file_name = self._find_first_file_recursive(folder_path)
+            
+            # Create and cache folder structure
+            folder_structure = FolderStructure(
+                folder_path=folder_path,
+                folder_type=folder_type,
+                video_files=video_files,
+                subdirs=subdirs,
+                first_file=first_file,
+                first_file_name=first_file_name
+            )
+            
+            self.folder_cache.put(cache_key, folder_structure)
+            self.logger.debug(f"Cached folder structure for: {folder_path.name} (type: {folder_type.value}, files: {len(video_files)}, subdirs: {len(subdirs)})")
+            
+            # Recursively cache all subdirectories
+            if recursive:
+                for subdir in subdirs:
+                    self._cache_folder_structure(subdir, recursive=True)
+            
+        except Exception as e:
+            self.logger.warning(f"Error caching folder structure for {folder_path}: {e}")
+            # Create minimal structure on error
+            folder_structure = FolderStructure(
+                folder_path=folder_path,
+                folder_type=FolderType.DIRECT_FILES,
+                video_files=[],
+                subdirs=[],
+                first_file=None,
+                first_file_name=None
+            )
+            self.folder_cache.put(cache_key, folder_structure)
+    
+    def _find_first_file_recursive(self, folder_path: Path) -> Tuple[Optional[Path], Optional[str]]:
+        """
+        Recursively find the first video file in a folder tree
+        
+        Args:
+            folder_path: Path to start searching from
+            
+        Returns:
+            Tuple of (first_file_path, first_file_name) or (None, None) if no file found
+        """
+        try:
+            # Check immediate files first
+            video_files = self.get_video_files(folder_path)
+            if video_files:
+                first_file = video_files[0]
+                return first_file, first_file.name
+            
+            # Recursively check subdirectories
+            subdirs = [d for d in folder_path.iterdir() if d.is_dir()] if folder_path.exists() else []
+            for subdir in sorted(subdirs, key=lambda x: x.name.lower()):
+                first_file, first_file_name = self._find_first_file_recursive(subdir)
+                if first_file:
+                    return first_file, first_file_name
+            
+            return None, None
+        except Exception as e:
+            self.logger.debug(f"Error finding first file recursively in {folder_path}: {e}")
+            return None, None
     
     def batch_extract_with_llm(self, folder_names: List[str]) -> List[TVShowInfo]:
         """
@@ -165,7 +332,7 @@ class TVShowOrganizer:
     def _detect_season_from_folder(self, folder_path: Path) -> Tuple[Optional[str], Optional[int]]:
         """
         Detect folder type and season number from folder structure and files
-        Uses the same logic as process_direct_files_folder and process_season_subfolders
+        Uses cached folder structure if available to avoid re-scanning
         
         Args:
             folder_path: Path to the folder
@@ -178,7 +345,19 @@ class TVShowOrganizer:
         if not folder_path.exists() or not folder_path.is_dir():
             return None, None
         
-        folder_type = self.determine_folder_type(folder_path)
+        # Try to get from cache first
+        cache_key = str(folder_path)
+        cached_structure = self.folder_cache.get(cache_key)
+        
+        if cached_structure:
+            folder_type = cached_structure.folder_type
+            video_files = cached_structure.video_files
+            first_file = cached_structure.first_file
+        else:
+            # Fallback to scanning if not cached
+            folder_type = self.determine_folder_type(folder_path)
+            video_files = self.get_video_files(folder_path)
+            first_file = video_files[0] if video_files else None
         
         if folder_type == FolderType.DIRECT_FILES:
             # Check folder name first for season number (e.g., "一人之下第二季", "The.Outcast.S02")
@@ -189,10 +368,8 @@ class TVShowOrganizer:
                 folder_season = None
             
             # Also check first file for season number
-            video_files = self.get_video_files(folder_path)
             file_season = None
-            if video_files:
-                first_file = video_files[0]
+            if first_file:
                 detected_season, _, _ = extract_episode_info(first_file.name)
                 if 1 <= detected_season <= 100:
                     file_season = detected_season
@@ -346,6 +523,15 @@ class TVShowOrganizer:
         if not folder_path.exists() or not folder_path.is_dir():
             return FolderType.DIRECT_FILES
         
+        # Try to get from cache first
+        cache_key = str(folder_path)
+        cached_structure = self.folder_cache.get(cache_key)
+        
+        if cached_structure:
+            # Use cached folder type
+            return cached_structure.folder_type
+        
+        # Fallback to scanning if not cached
         # Count video files and subdirectories
         video_files = self.get_video_files(folder_path)
         subdirs = [d for d in folder_path.iterdir() if d.is_dir()]
@@ -444,9 +630,12 @@ class TVShowOrganizer:
             
             # Extract season number from folder name (initial attempt)
             folder_season = extract_season_number(subdir.name, None)
+            if folder_season:
+                self.logger.debug(f"    Extracted season {folder_season} from folder name: {subdir.name}")
             
             # Validate folder_season - filter out unreasonable values
-            if folder_season and not (1 <= folder_season <= 100):
+            # Allow season 0 (Specials) as it's a valid season number
+            if folder_season is not None and not (0 <= folder_season <= 100):
                 self.logger.debug(f"    Ignoring invalid season {folder_season} from folder name")
                 folder_season = None
             
@@ -454,8 +643,29 @@ class TVShowOrganizer:
             file_seasons = []
             for video_file in video_files:
                 file_season, _, _ = extract_episode_info(video_file.name)
-                # Only consider reasonable season numbers (1-100)
-                if 1 < file_season <= 100:  # > 1 to avoid default season 1
+                # Only consider reasonable season numbers (0-100)
+                # For season 0 (Specials), only include if explicitly detected in filename
+                if file_season == 0:
+                    # Check if filename has explicit season 0 patterns (S00, Season 0, etc.)
+                    # Pattern allows: S00, S0, Season 0, Season 00, S00E, S0E, etc.
+                    has_explicit_season_0 = bool(re.search(
+                        r'[Ss](?:eason\s*)?0{1,2}(?:[EePp]|\b)|第[零〇]季|零季',
+                        video_file.name, re.IGNORECASE
+                    ))
+                    if has_explicit_season_0:
+                        file_seasons.append(file_season)
+                # For season 1, only include if explicitly detected in filename (not just default)
+                elif file_season == 1:
+                    # Check if filename has explicit season patterns (S01, Season 1, etc.)
+                    # Pattern allows: S01, S1, Season 1, Season 01, S01E, S1E, etc.
+                    # Note: (?=[EePp]|\b|\.) allows E/P, word boundary, or period after season number
+                    has_explicit_season = bool(re.search(
+                        r'[Ss](?:eason[.\s-]*)?0?1(?=[EePp]|\b|\.)|第[一壹]季|一季',
+                        video_file.name, re.IGNORECASE
+                    ))
+                    if has_explicit_season:
+                        file_seasons.append(file_season)
+                elif 1 < file_season <= 100:
                     file_seasons.append(file_season)
             
             # Determine the most reliable season number
@@ -949,11 +1159,30 @@ class TVShowOrganizer:
         self.logger.info(f"Found {len(show_folders)} potential TV show folders")
         
         # Step 2: Batch extract TV show info using LLM agent (all folders at once)
+        # Optionally include first file name for better context
         folder_names = [folder.name for folder in show_folders]
-        tv_show_infos = self.batch_extract_with_llm(folder_names)
+        # Get first file names from cache for LLM context (if available)
+        folder_contexts = []
+        for folder_path in show_folders:
+            cache_key = str(folder_path)
+            cached_structure = self.folder_cache.get(cache_key)
+            if cached_structure and cached_structure.first_file_name:
+                # Include first file name for better LLM context
+                folder_contexts.append(f"{folder_path.name} | First file: {cached_structure.first_file_name}")
+            else:
+                folder_contexts.append(folder_path.name)
+        
+        tv_show_infos = self.batch_extract_with_llm(folder_contexts)
         
         # Create a mapping from folder name to TVShowInfo
-        folder_info_map = {info.folder_name: info for info in tv_show_infos}
+        # Handle case where LLM might return enhanced context in folder_name
+        folder_info_map = {}
+        for info in tv_show_infos:
+            # Extract original folder name (before "|" if present)
+            original_folder_name = info.folder_name.split(" | ")[0] if " | " in info.folder_name else info.folder_name
+            # Update folder_name to original for consistency
+            info.folder_name = original_folder_name
+            folder_info_map[original_folder_name] = info
         
         # Step 3: Fetch TMDB metadata for each show (with threading and caching)
         self.logger.info(f"\n{Colors.BOLD}Fetching TMDB metadata...{Colors.RESET}")
@@ -1129,6 +1358,9 @@ class TVShowOrganizer:
                 log_file=self.log_file
             )
             self.logger.info(f"\n{Colors.CYAN}Report saved to: {self.report_file}{Colors.RESET}")
+            
+            # Clean up old files after generating new report
+            self._cleanup_old_files()
         except Exception as e:
             self.logger.error(f"Failed to generate HTML report: {e}")
 
