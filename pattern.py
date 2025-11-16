@@ -51,10 +51,7 @@ METADATA_PATTERNS = [
     (r'\b(?:H\.?26[45]|H\.?266)\b', re.IGNORECASE, 'Video codecs (H.264/H.265/H.266 with dots)'),
     (r'\b(?:HEVC|AVC|VP9|VP8|VC-?1|MPEG-?2|MPEG-?4|AV1|VVC|ProRes|DNxHD|DNxHR|Xvid|DivX)\b', re.IGNORECASE, 'Video codecs (HEVC/AVC/AV1/VVC/ProRes)'),
     
-    # Audio codecs and formats
-    (r'\b(?:AAC|AC3|DTS|DDP|E-AC3|FLAC|MP3|OGG|VORBIS|OPUS|PCM|TrueHD|DTS-HD|DTSHD|DTS-HDMA|DTSHDMA|DTSX|DTS:X|Atmos)\b', re.IGNORECASE, 'Audio codecs'),
-    (r'\b(?:DTS-HD\s*MA|DTSHD\s*MA|DTS-HDMA|DTSHDMA)\b', re.IGNORECASE, 'Audio codecs (DTS-HD MA / DTS-HDMA)'),
-    (r'\b(?:DDP|DTS|TrueHD|DTS-HD|DTSHD|DTS-HDMA|DTSHDMA)[\s.]*\d+\.\d+\b', re.IGNORECASE, 'Audio codecs with version (DDP5.1, DTS5.1, DTS.5.1, DTS 5.1, TrueHD7.1, DTS-HDMA5.1)'),
+    # Audio track count
     (r'\b\d+Audios?\b', re.IGNORECASE, 'Audio track count (11Audios, 2Audio)'),
 
     # HDR and Dolby Vision formats
@@ -94,6 +91,17 @@ def normalize_metadata(text: str, preserve_years: bool = True) -> str:
         Normalized text with metadata removed (replaced with spaces)
     """
     normalized = text
+    
+    # First, handle audio codecs by removing everything after the codec name
+    # Audio codecs typically appear at the end of filenames, followed by channel configs
+    # (e.g., AAC2.0, AAC5.1, TrueHD7.1.4, DTS-HDMA5.1)
+    # Remove everything after audio codec until we hit:
+    # - Release group markers: -[GROUP], [GROUP], (GROUP)
+    # - Quality indicators: Remux, WEB-DL, etc.
+    # - File extension: .mkv, .mp4, etc.
+    # Pattern matches: codec + optional channel config + everything until delimiter
+    audio_codec_with_suffix = r'\b(?:AAC|AC3|DTS(?:-HD(?:MA)?|HD(?:MA)?)?|DDP|E-AC3|FLAC|MP3|OGG|VORBIS|OPUS|PCM|TrueHD|DTSX|DTS:X|Atmos)[\s.]*(?:\d+\.\d+(?:\.\d+)?)?[^\w]*(?=[-\[\(]|(?:Remux|WEB-DL|WEBRip|BluRay|BDRip|DVDRip|HDTV|UHDTV|CAM|TS|TC|SCR|DVDScr|UHD)\b|\.(?:mkv|mp4|avi|mov|wmv|flv|webm|m4v|ts|m2ts|srt|ass|ssa|vtt|sub|idx|sup|pgs)(?:\s|$)|$)'
+    normalized = re.sub(audio_codec_with_suffix, ' ', normalized, flags=re.IGNORECASE)
     
     # Apply all metadata patterns from METADATA_PATTERNS
     for pattern, flags, _description in METADATA_PATTERNS:
