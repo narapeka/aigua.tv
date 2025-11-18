@@ -86,7 +86,7 @@ def test_organizer_initialization():
                 log_dir=str(output_dir / "logs")
             )
             
-            print(f"✓ Organizer initialized successfully")
+            print(f"[OK] Organizer initialized successfully")
             print(f"  Input Directory: {organizer.input_dir}")
             print(f"  Output Directory: {organizer.output_dir}")
             print(f"  Dry Run: {organizer.dry_run}")
@@ -110,7 +110,7 @@ def test_organizer_initialization():
             
             return organizer, logger
     except Exception as e:
-        print(f"✗ Failed to initialize organizer: {e}")
+        print(f"[FAIL] Failed to initialize organizer: {e}")
         import traceback
         traceback.print_exc()
         return None, None
@@ -132,7 +132,7 @@ def test_scan_folders(organizer: TVShowOrganizer):
             
             folders = organizer.scan_folders()
             
-            print(f"✓ Scanned {len(folders)} folders")
+            print(f"[OK] Scanned {len(folders)} folders")
             for folder in folders:
                 print(f"  - {folder.name}")
             
@@ -140,11 +140,11 @@ def test_scan_folders(organizer: TVShowOrganizer):
             organizer.input_dir = original_input
             
             assert len(folders) == 3, f"Expected 3 folders, got {len(folders)}"
-            print(f"✓ Folder count matches expected (3)")
+            print(f"[OK] Folder count matches expected (3)")
             
             return True
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"[FAIL] Error: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -170,10 +170,10 @@ def test_determine_folder_type(organizer: TVShowOrganizer):
             print(f"  Show 2 ({test_structure['show2'].name}): {folder_type2.value}")
             assert folder_type2.value == "season_subfolders", f"Expected season_subfolders, got {folder_type2.value}"
             
-            print(f"✓ Folder types determined correctly")
+            print(f"[OK] Folder types determined correctly")
             return True
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"[FAIL] Error: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -245,11 +245,11 @@ def test_end_to_end_dry_run(organizer: TVShowOrganizer):
                         handler.close()
                     logger.removeHandler(handler)
             
-            print(f"✓ Dry run completed - files not moved as expected")
+            print(f"[OK] Dry run completed - files not moved as expected")
             
             return True
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"[FAIL] Error: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -282,29 +282,29 @@ def test_cache_functionality(organizer: TVShowOrganizer):
         assert retrieved.id == 1396, "Cache should return correct ID"
         assert retrieved.name == "Breaking Bad", "Cache should return correct name"
         
-        print(f"✓ Cache put/get works correctly")
+        print(f"[OK] Cache put/get works correctly")
         
         # Test cache miss
         missing = cache.get("nonexistent_key")
         assert missing is None, "Cache should return None for missing key"
         
-        print(f"✓ Cache miss handled correctly")
+        print(f"[OK] Cache miss handled correctly")
         
         # Test cache size
         size = cache.size()
         assert size == 1, f"Cache should have 1 entry, got {size}"
         
-        print(f"✓ Cache size tracking works")
+        print(f"[OK] Cache size tracking works")
         
         # Test clear
         cache.clear()
         assert cache.size() == 0, "Cache should be empty after clear"
         
-        print(f"✓ Cache clear works")
+        print(f"[OK] Cache clear works")
         
         return True
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"[FAIL] Error: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -323,7 +323,7 @@ def test_file_operation_timeout(organizer: TVShowOrganizer):
         assert hasattr(organizer, '_file_operation_with_timeout'), "Organizer should have timeout method"
         assert organizer.file_operation_timeout == 15, "Timeout should be 15 seconds"
         
-        print(f"✓ Timeout mechanism configured")
+        print(f"[OK] Timeout mechanism configured")
         print(f"  Timeout: {organizer.file_operation_timeout}s")
         print(f"  Method: _file_operation_with_timeout")
         
@@ -334,11 +334,11 @@ def test_file_operation_timeout(organizer: TVShowOrganizer):
         result = organizer._file_operation_with_timeout(fast_operation)
         assert result == "success", "Timeout method should execute operations"
         
-        print(f"✓ Timeout method executes operations correctly")
+        print(f"[OK] Timeout method executes operations correctly")
         
         return True
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"[FAIL] Error: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -385,7 +385,7 @@ def test_episode_matching(organizer: TVShowOrganizer):
         
         assert episode.tmdb_title == "试播集", f"Expected '试播集', got '{episode.tmdb_title}'"
         
-        print(f"✓ Episode matched correctly")
+        print(f"[OK] Episode matched correctly")
         print(f"  Episode: S{episode.season_number:02d}E{episode.episode_number:02d}")
         print(f"  TMDB Title: {episode.tmdb_title}")
         
@@ -401,11 +401,11 @@ def test_episode_matching(organizer: TVShowOrganizer):
         organizer._match_episode_with_tmdb(episode2, tmdb_metadata)
         assert episode2.tmdb_title is None, "Non-existent episode should not have TMDB title"
         
-        print(f"✓ Non-existent episode handled correctly")
+        print(f"[OK] Non-existent episode handled correctly")
         
         return True
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"[FAIL] Error: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -424,7 +424,7 @@ def main():
     results.append(("Initialization", organizer is not None))
     
     if organizer is None:
-        print("\n✗ Cannot continue tests without organizer initialization")
+        print("\n[FAIL] Cannot continue tests without organizer initialization")
         return
     
     # Test 2: Scan folders
@@ -454,16 +454,16 @@ def main():
     total = len(results)
     
     for test_name, result in results:
-        status = "✓ PASS" if result else "✗ FAIL"
+        status = "[PASS]" if result else "[FAIL]"
         print(f"  {status}: {test_name}")
     
     print(f"\nTotal: {passed}/{total} tests passed")
     
     if passed == total:
-        print("\n✓ All tests passed!")
+        print("\n[OK] All tests passed!")
         return 0
     else:
-        print(f"\n✗ {total - passed} test(s) failed")
+        print(f"\n[FAIL] {total - passed} test(s) failed")
         return 1
 
 

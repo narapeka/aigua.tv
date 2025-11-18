@@ -65,10 +65,10 @@ class TestSeasonValidation:
             print(f"Detected season from folder name: {detected_season}")
             
             if detected_season and 1 <= detected_season <= 100:
-                print(f"  ✓ Season {detected_season} detected from folder name")
+                print(f"  [OK] Season {detected_season} detected from folder name")
                 return detected_season
             else:
-                print(f"  ✗ No valid season detected from folder name")
+                print(f"  [FAIL] No valid season detected from folder name")
                 return None
         except Exception as e:
             print(f"Error in season detection: {e}")
@@ -106,12 +106,12 @@ class TestSeasonValidation:
                 if info.cn_name and ("第二季" in info.cn_name or "S02" in info.cn_name):
                     print(f"\n  ⚠️  WARNING: Season number still in cn_name: {info.cn_name}")
                 else:
-                    print(f"\n  ✓ Season number correctly stripped from cn_name")
+                    print(f"\n  [OK] Season number correctly stripped from cn_name")
                 
                 if info.en_name and "S02" in info.en_name:
                     print(f"  ⚠️  WARNING: Season number still in en_name: {info.en_name}")
                 else:
-                    print(f"  ✓ Season number correctly stripped from en_name")
+                    print(f"  [OK] Season number correctly stripped from en_name")
                 
                 return info
             else:
@@ -167,10 +167,10 @@ class TestSeasonValidation:
                 # Check if this is the correct match
                 is_correct = False
                 if "一人之下" in metadata.name or "The Outcast" in (metadata.original_name or ""):
-                    print(f"\n  ✓ CORRECT MATCH!")
+                    print(f"\n  [OK] CORRECT MATCH!")
                     is_correct = True
                 elif "下北泽" in metadata.name or "下北泽" in (metadata.original_name or ""):
-                    print(f"\n  ❌ WRONG MATCH DETECTED!")
+                    print(f"\n  [FAIL] WRONG MATCH DETECTED!")
                     print(f"     Expected: 一人之下 / The Outcast")
                     print(f"     Got: {metadata.name}")
                 else:
@@ -178,11 +178,11 @@ class TestSeasonValidation:
                 
                 # Check confidence
                 if metadata.match_confidence == "high":
-                    print(f"\n  ✓ High confidence match")
+                    print(f"\n  [OK] High confidence match")
                     if is_correct:
-                        print(f"  ✓ Correct match with high confidence - SUCCESS!")
+                        print(f"  [OK] Correct match with high confidence - SUCCESS!")
                     else:
-                        print(f"  ✗ Wrong match with high confidence - FAILURE!")
+                        print(f"  [FAIL] Wrong match with high confidence - FAILURE!")
                 else:
                     print(f"\n  ⚠️  Confidence: {metadata.match_confidence}")
                 
@@ -289,11 +289,11 @@ class TestWrongMatch:
                 
                 # Check if this is the wrong match
                 if "下北泽" in metadata.name or "下北泽" in (metadata.original_name or ""):
-                    print(f"\n  ❌ WRONG MATCH DETECTED!")
+                    print(f"\n  [FAIL] WRONG MATCH DETECTED!")
                     print(f"     Expected: 一人之下 / The Outcast")
                     print(f"     Got: {metadata.name}")
                 elif "一人之下" in metadata.name or "The Outcast" in (metadata.original_name or ""):
-                    print(f"\n  ✓ CORRECT MATCH!")
+                    print(f"\n  [OK] CORRECT MATCH!")
                 else:
                     print(f"\n  ⚠️  UNEXPECTED MATCH - verify manually")
                 
@@ -365,11 +365,11 @@ def run_season_validation_tests():
             print("\n" + "="*80)
             print("Season Validation Summary")
             print("="*80)
-            print("✓ Season detection from folder name")
-            print("✓ LLM extracts show name without season number")
-            print("✓ TMDB search without year filter (for season > 1)")
-            print("✓ Year mismatch check skipped (for season > 1)")
-            print("✓ Correct match with high confidence")
+            print("[OK] Season detection from folder name")
+            print("[OK] LLM extracts show name without season number")
+            print("[OK] TMDB search without year filter (for season > 1)")
+            print("[OK] Year mismatch check skipped (for season > 1)")
+            print("[OK] Correct match with high confidence")
             return True
     
     return False
@@ -429,7 +429,7 @@ def main():
     total = len(results)
     
     for test_name, result in results:
-        status = "✓ PASS" if result else "✗ FAIL"
+        status = "[PASS]" if result else "[FAIL]"
         print(f"  {status}: {test_name}")
     
     print(f"\nTotal: {passed}/{total} test suites passed")

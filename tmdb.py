@@ -9,10 +9,12 @@ Author: Kilo Code
 import logging
 import re
 import time
+import threading
 from typing import Optional, List, Dict, Any, Tuple, Union
 from dataclasses import dataclass
 from tmdbv3api import TMDb, TV, Season as TMDBSeason, Episode as TMDBEpisode
 import requests
+from requests.exceptions import HTTPError
 
 
 @dataclass
@@ -129,6 +131,12 @@ class TMDBClient:
         self.rate_limit = rate_limit
         self.min_request_interval = 1.0 / rate_limit  # Minimum seconds between requests
         self.last_request_time = 0.0  # Track last request time for rate limiting
+        self._rate_limit_lock = threading.Lock()  # Lock for thread-safe rate limiting
+        self._concurrent_requests = 0  # Track number of concurrent requests
+        # Set max concurrent requests to at least 10 to avoid blocking workers
+        # The rate limiting already handles spacing, so we don't need strict concurrent limits
+        self._max_concurrent_requests = max(10, rate_limit // 2)  # Allow more concurrent requests
+        self._rate_limit_errors = 0  # Track 429 errors for monitoring
         self.logger = logger or logging.getLogger(__name__)
         
         # Initialize TMDB client
@@ -169,16 +177,208 @@ class TMDBClient:
         """
         Enforce rate limiting by waiting if necessary before making a request.
         Ensures we don't exceed rate_limit requests per second.
+        Thread-safe implementation using locks.
         """
-        current_time = time.time()
-        time_since_last_request = current_time - self.last_request_time
+        with self._rate_limit_lock:
+            current_time = time.time()
+            time_since_last_request = current_time - self.last_request_time
+            
+            # Wait if we're making requests too quickly
+            if time_since_last_request < self.min_request_interval:
+                wait_time = self.min_request_interval - time_since_last_request
+                self.logger.debug(f"Rate limiting: waiting {wait_time:.3f} seconds before next request (interval: {self.min_request_interval:.3f}s, rate: {self.rate_limit} req/sec)")
+                time.sleep(wait_time)
+            
+            # Wait if we have too many concurrent requests
+            while self._concurrent_requests >= self._max_concurrent_requests:
+                wait_time = self.min_request_interval
+                self.logger.debug(f"Rate limiting: waiting {wait_time:.3f} seconds (too many concurrent requests: {self._concurrent_requests})")
+                time.sleep(wait_time)
+            
+            # Mark that we're about to make a request (will be decremented after call completes)
+            self._concurrent_requests += 1
+    
+    def _mark_request_complete(self):
+        """
+        Mark that a request has completed. Should be called AFTER the API call finishes.
+        Updates last_request_time to track actual completion time.
+        """
+        with self._rate_limit_lock:
+            self._concurrent_requests = max(0, self._concurrent_requests - 1)
+            self.last_request_time = time.time()
+    
+    def get_rate_limit_stats(self) -> Dict[str, Any]:
+        """
+        Get rate limiting statistics for monitoring.
         
-        if time_since_last_request < self.min_request_interval:
-            wait_time = self.min_request_interval - time_since_last_request
-            self.logger.debug(f"Rate limiting: waiting {wait_time:.3f} seconds before next request")
-            time.sleep(wait_time)
+        Returns:
+            Dictionary with rate limit statistics
+        """
+        with self._rate_limit_lock:
+            return {
+                'rate_limit': self.rate_limit,
+                'min_request_interval': self.min_request_interval,
+                'concurrent_requests': self._concurrent_requests,
+                'max_concurrent_requests': self._max_concurrent_requests,
+                'rate_limit_errors': self._rate_limit_errors,
+                'last_request_time': self.last_request_time
+            }
+    
+    def _is_rate_limit_error(self, error: Exception) -> bool:
+        """
+        Check if an error is a rate limit error (HTTP 429).
         
-        self.last_request_time = time.time()
+        Args:
+            error: Exception to check
+            
+        Returns:
+            True if error is a rate limit error, False otherwise
+        """
+        # Check for HTTPError with status code 429
+        if isinstance(error, HTTPError):
+            if hasattr(error, 'response') and error.response is not None:
+                if error.response.status_code == 429:
+                    return True
+        
+        # Check for requests HTTPError
+        if isinstance(error, requests.exceptions.HTTPError):
+            if hasattr(error, 'response') and error.response is not None:
+                if error.response.status_code == 429:
+                    return True
+        
+        # Check error message for rate limit keywords
+        error_str = str(error).lower()
+        rate_limit_keywords = ['429', 'too many requests', 'rate limit', 'throttle', 'quota exceeded']
+        if any(keyword in error_str for keyword in rate_limit_keywords):
+            return True
+        
+        return False
+    
+    def _is_retryable_error(self, error: Exception) -> bool:
+        """
+        Check if an error is retryable (connection-related or rate limit).
+        
+        Args:
+            error: Exception to check
+            
+        Returns:
+            True if error is retryable, False otherwise
+        """
+        # Check for rate limit errors first
+        if self._is_rate_limit_error(error):
+            return True
+        
+        retryable_exceptions = (
+            ConnectionError,
+            ConnectionResetError,
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+            requests.exceptions.RequestException
+        )
+        
+        # Check if it's a retryable exception type
+        if isinstance(error, retryable_exceptions):
+            return True
+        
+        # Check if it's a tuple containing a retryable exception (common with some libraries)
+        if isinstance(error, tuple) and len(error) > 0:
+            if isinstance(error[0], str) and len(error) > 1:
+                # Check the second element (the actual exception)
+                if isinstance(error[1], retryable_exceptions):
+                    return True
+            # Check if any element is a retryable exception
+            for item in error:
+                if isinstance(item, retryable_exceptions):
+                    return True
+        
+        # Check error message for connection-related keywords
+        error_str = str(error).lower()
+        connection_keywords = ['connection', 'reset', 'aborted', 'timeout', 'refused', 'closed']
+        if any(keyword in error_str for keyword in connection_keywords):
+            return True
+        
+        return False
+    
+    def _retry_with_backoff(self, func, max_retries: int = 3, initial_backoff: float = 1.0, *args, **kwargs):
+        """
+        Retry a function call with exponential backoff on connection errors or rate limits.
+        
+        Args:
+            func: Function to call
+            max_retries: Maximum number of retry attempts (default: 3)
+            initial_backoff: Initial backoff time in seconds (default: 1.0)
+            *args, **kwargs: Arguments to pass to func
+            
+        Returns:
+            Result of func call
+            
+        Raises:
+            Exception: If all retries fail
+        """
+        last_exception = None
+        for attempt in range(max_retries + 1):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                if self._is_retryable_error(e):
+                    last_exception = e
+                    
+                    # Special handling for rate limit errors (429)
+                    if self._is_rate_limit_error(e):
+                        self._rate_limit_errors += 1
+                        # Use longer backoff for rate limit errors
+                        if attempt < max_retries:
+                            # For 429 errors, use longer initial backoff and exponential growth
+                            rate_limit_backoff = max(2.0, initial_backoff * 2) * (2 ** attempt)
+                            self.logger.warning(
+                                f"Rate limit error (429) detected (attempt {attempt + 1}/{max_retries + 1}): {e}. "
+                                f"Retrying in {rate_limit_backoff:.1f} seconds..."
+                            )
+                            time.sleep(rate_limit_backoff)
+                        else:
+                            self.logger.error(f"All {max_retries + 1} retry attempts failed due to rate limiting: {e}")
+                    else:
+                        # Regular connection error handling
+                        if attempt < max_retries:
+                            backoff_time = initial_backoff * (2 ** attempt)
+                            self.logger.warning(
+                                f"Connection error (attempt {attempt + 1}/{max_retries + 1}): {e}. "
+                                f"Retrying in {backoff_time:.1f} seconds..."
+                            )
+                            time.sleep(backoff_time)
+                        else:
+                            self.logger.error(f"All {max_retries + 1} retry attempts failed: {e}")
+                else:
+                    # Non-retryable exceptions (e.g., TypeError, ValueError) are raised immediately
+                    raise
+        
+        # If we exhausted all retries, raise the last exception
+        if last_exception:
+            raise last_exception
+    
+    def _call_api_with_rate_limit(self, func, *args, **kwargs):
+        """
+        Wrapper to make API calls with proper rate limiting.
+        Ensures rate limiting is applied before AND after the call.
+        
+        Args:
+            func: Function to call (API method)
+            *args, **kwargs: Arguments to pass to func
+            
+        Returns:
+            Result of func call
+        """
+        # Wait for rate limit before making request
+        self._wait_for_rate_limit()
+        
+        try:
+            # Make the API call with retry logic
+            result = self._retry_with_backoff(func, *args, **kwargs)
+            return result
+        finally:
+            # Always mark request as complete, even if it failed
+            # This ensures last_request_time is updated based on actual completion
+            self._mark_request_complete()
     
     def search_tv_show(self, query: str, year: Optional[int] = None, max_pages: int = 3, initial_pages_only: int = 1) -> List[TVShowMetadata]:
         """
@@ -202,13 +402,10 @@ class TMDBClient:
             
             # Fetch pages of results (only initial_pages_only initially)
             for page in range(1, pages_to_fetch + 1):
-                # Enforce rate limiting before making the API request
-                self._wait_for_rate_limit()
-                
                 try:
-                    # Try to get paginated results
+                    # Try to get paginated results with retry logic and rate limiting
                     # The tmdbv3api library may support page parameter via kwargs
-                    raw_page_results = self.tv.search(query, page=page)
+                    raw_page_results = self._call_api_with_rate_limit(lambda: self.tv.search(query, page=page))
                     
                     if not raw_page_results:
                         # No more results, stop pagination
@@ -248,9 +445,7 @@ class TMDBClient:
                 except TypeError:
                     # Library doesn't support page parameter, fall back to single page
                     if page == 1:
-                        # Enforce rate limiting before making the API request
-                        self._wait_for_rate_limit()
-                        raw_results = self.tv.search(query)
+                        raw_results = self._call_api_with_rate_limit(lambda: self.tv.search(query))
                         
                         if not raw_results:
                             self.logger.debug(f"No results found for: {query}")
@@ -272,7 +467,11 @@ class TMDBClient:
                         all_results = results
                     break
                 except Exception as e:
-                    self.logger.warning(f"Error fetching page {page} for '{query}': {e}")
+                    # Check if it's a retryable error that wasn't caught by retry logic
+                    if self._is_retryable_error(e):
+                        self.logger.warning(f"Connection error after retries for page {page} of '{query}': {e}")
+                    else:
+                        self.logger.warning(f"Error fetching page {page} for '{query}': {e}")
                     if page == 1:
                         return []
                     break
@@ -307,10 +506,7 @@ class TMDBClient:
         try:
             self.logger.debug(f"Fetching TMDB details for TV show ID: {tv_id}")
             
-            # Enforce rate limiting before making the API request
-            self._wait_for_rate_limit()
-            
-            details = self.tv.details(tv_id)
+            details = self._call_api_with_rate_limit(lambda: self.tv.details(tv_id))
             
             if not details:
                 self.logger.debug(f"No details found for TV show ID: {tv_id}")
@@ -562,12 +758,9 @@ class TMDBClient:
                 
                 # Fetch pages of results (only initial_pages_only initially)
                 for page in range(1, pages_to_fetch + 1):
-                    # Enforce rate limiting before making the API request
-                    self._wait_for_rate_limit()
-                    
                     try:
-                        # Try to get paginated results
-                        raw_page_results = self.tv.search(query, page=page)
+                        # Try to get paginated results with retry logic and rate limiting
+                        raw_page_results = self._call_api_with_rate_limit(lambda: self.tv.search(query, page=page))
                         
                         if not raw_page_results:
                             # No more results, stop pagination
@@ -606,9 +799,7 @@ class TMDBClient:
                     except TypeError:
                         # Library doesn't support page parameter, fall back to single page
                         if page == 1:
-                            # Enforce rate limiting before making the API request
-                            self._wait_for_rate_limit()
-                            raw_results = self.tv.search(query)
+                            raw_results = self._call_api_with_rate_limit(lambda: self.tv.search(query))
                             
                             if not raw_results:
                                 break
@@ -629,7 +820,11 @@ class TMDBClient:
                             all_results = results
                         break
                     except Exception as e:
-                        self.logger.warning(f"Error fetching page {page} for '{query}' with language {lang}: {e}")
+                        # Check if it's a retryable error that wasn't caught by retry logic
+                        if self._is_retryable_error(e):
+                            self.logger.warning(f"Connection error after retries for page {page} of '{query}' with language {lang}: {e}")
+                        else:
+                            self.logger.warning(f"Error fetching page {page} for '{query}' with language {lang}: {e}")
                         if page == 1:
                             break
                         break
@@ -680,30 +875,36 @@ class TMDBClient:
         """
         try:
             # Get basic details
-            # Enforce rate limiting before making the API request
-            self._wait_for_rate_limit()
-            details = self.tv.details(tv_id)
+            details = self._call_api_with_rate_limit(lambda: self.tv.details(tv_id))
             if not details:
                 return None
             
+            # Add small delay between rapid sequential calls to prevent bursts
+            time.sleep(self.min_request_interval * 0.5)
+            
             # Get alternative titles
             try:
-                # Enforce rate limiting before making the API request
-                self._wait_for_rate_limit()
-                alt_titles = self.tv.alternative_titles(tv_id)
+                alt_titles = self._call_api_with_rate_limit(lambda: self.tv.alternative_titles(tv_id))
                 details['alternative_titles'] = alt_titles
             except Exception as e:
-                self.logger.debug(f"Could not fetch alternative_titles for {tv_id}: {e}")
+                if self._is_retryable_error(e):
+                    self.logger.warning(f"Connection error fetching alternative_titles for {tv_id} after retries: {e}")
+                else:
+                    self.logger.debug(f"Could not fetch alternative_titles for {tv_id}: {e}")
                 details['alternative_titles'] = {}
+            
+            # Add small delay between rapid sequential calls
+            time.sleep(self.min_request_interval * 0.5)
             
             # Get translations
             try:
-                # Enforce rate limiting before making the API request
-                self._wait_for_rate_limit()
-                translations = self.tv.translations(tv_id)
+                translations = self._call_api_with_rate_limit(lambda: self.tv.translations(tv_id))
                 details['translations'] = translations
             except Exception as e:
-                self.logger.debug(f"Could not fetch translations for {tv_id}: {e}")
+                if self._is_retryable_error(e):
+                    self.logger.warning(f"Connection error fetching translations for {tv_id} after retries: {e}")
+                else:
+                    self.logger.debug(f"Could not fetch translations for {tv_id}: {e}")
                 details['translations'] = {}
             
             return details
@@ -981,9 +1182,7 @@ class TMDBClient:
             self.tmdb.language = language
             
             # Get TV show details to know number of seasons
-            # Enforce rate limiting before making the API request
-            self._wait_for_rate_limit()
-            details = self.tv.details(tv_id)
+            details = self._call_api_with_rate_limit(lambda: self.tv.details(tv_id))
             if not details:
                 return []
             
@@ -991,9 +1190,7 @@ class TMDBClient:
             
             for season_num in range(1, num_seasons + 1):
                 try:
-                    # Enforce rate limiting before making the API request
-                    self._wait_for_rate_limit()
-                    season_details = self.season.details(tv_id, season_num)
+                    season_details = self._call_api_with_rate_limit(lambda: self.season.details(tv_id, season_num))
                     if not season_details:
                         continue
                     
@@ -1036,11 +1233,13 @@ class TMDBClient:
         original_language = self.tmdb.language
         try:
             self.tmdb.language = language
-            self._wait_for_rate_limit()
-            season_details = self.season.details(tv_id, season_number)
+            season_details = self._call_api_with_rate_limit(lambda: self.season.details(tv_id, season_number))
             return season_details
         except Exception as e:
-            self.logger.warning(f"Error fetching season {season_number} details for TV show {tv_id}: {e}")
+            if self._is_retryable_error(e):
+                self.logger.warning(f"Connection error fetching season {season_number} details for TV show {tv_id} after retries: {e}")
+            else:
+                self.logger.warning(f"Error fetching season {season_number} details for TV show {tv_id}: {e}")
             return None
         finally:
             self.tmdb.language = original_language

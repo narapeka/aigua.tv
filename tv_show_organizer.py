@@ -361,7 +361,8 @@ class TVShowOrganizer:
         
         if folder_type == FolderType.DIRECT_FILES:
             # Check folder name first for season number (e.g., "一人之下第二季", "The.Outcast.S02")
-            folder_season = extract_season_number(folder_path.name, None)
+            # Use mode='folder' to exclude episode count patterns like "xx集"
+            folder_season = extract_season_number(folder_path.name, None, mode='folder')
             
             # Validate folder_season - filter out unreasonable values
             if folder_season and not (1 <= folder_season <= 100):
@@ -563,9 +564,21 @@ class TVShowOrganizer:
         first_file = video_files[0]
         detected_season, _, _ = extract_episode_info(first_file.name)
         
-        # Only use detected season if it's reasonable (1-100), otherwise default to 1
+        # Only use detected season if it's reasonable (0-100), otherwise default to 1
+        # Allow season 0 (Specials) if explicitly detected in filename
         # This prevents false matches from codec names (H265), years (2001), etc.
-        if 1 <= detected_season <= 100:
+        if detected_season == 0:
+            # Check if filename has explicit season 0 patterns (S00, Season 0, etc.)
+            has_explicit_season_0 = bool(re.search(
+                r'[Ss](?:eason\s*)?0{1,2}(?:[EePp]|\b)|第[零〇]季|零季',
+                first_file.name, re.IGNORECASE
+            ))
+            if has_explicit_season_0:
+                season_num = 0
+            else:
+                season_num = 1
+                self.logger.debug(f"  Detected season 0 but no explicit pattern, defaulting to Season 1")
+        elif 1 <= detected_season <= 100:
             season_num = detected_season
         else:
             season_num = 1
@@ -576,12 +589,37 @@ class TVShowOrganizer:
             # Try to extract episode info, use position as fallback
             detected_season, detected_episode, end_episode = extract_episode_info(video_file.name, i)
             
-            # Validate detected season - only use if reasonable
-            if not (1 <= detected_season <= 100):
-                detected_season = season_num
+            # Check if filename has explicit season pattern (S00, S01, Season 1, etc.)
+            has_explicit_season = bool(re.search(
+                r'[Ss](?:eason[.\s-]*)?\d+|[第][一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾\d]+[季]',
+                video_file.name, re.IGNORECASE
+            ))
             
-            # Use detected season if consistent, otherwise use first file's season
-            final_season = detected_season if detected_season == season_num else season_num
+            # Validate detected season - allow season 0 if explicitly detected
+            if detected_season == 0:
+                # Check if filename has explicit season 0 patterns
+                has_explicit_season_0 = bool(re.search(
+                    r'[Ss](?:eason\s*)?0{1,2}(?:[EePp]|\b)|第[零〇]季|零季',
+                    video_file.name, re.IGNORECASE
+                ))
+                if has_explicit_season_0:
+                    # Use season 0 if explicitly detected
+                    final_season = 0
+                elif has_explicit_season:
+                    # Has explicit season pattern but not 0, use detected season
+                    final_season = detected_season if (1 <= detected_season <= 100) else season_num
+                else:
+                    final_season = season_num
+            elif has_explicit_season and (1 <= detected_season <= 100):
+                # File has explicit season pattern, use it (even if different from season_num)
+                final_season = detected_season
+            elif not (1 <= detected_season <= 100):
+                # Invalid season, use default
+                final_season = season_num
+            else:
+                # Valid season but no explicit pattern, use if consistent with season_num
+                final_season = detected_season if detected_season == season_num else season_num
+            
             final_episode = detected_episode if detected_episode != i else i
             
             episode = Episode(
@@ -596,16 +634,29 @@ class TVShowOrganizer:
             
             self.logger.debug(f"  Episode: {video_file.name} -> S{final_season:02d}E{final_episode:02d}")
         
-        season = Season(
-            show_name=show_name,
-            season_number=season_num,
-            episodes=episodes,
-            original_folder=folder_path
-        )
+        # Group episodes by season number to handle mixed seasons
+        episodes_by_season = {}
+        for episode in episodes:
+            season_key = episode.season_number
+            if season_key not in episodes_by_season:
+                episodes_by_season[season_key] = []
+            episodes_by_season[season_key].append(episode)
+        
+        # Create Season objects for each unique season
+        seasons = []
+        for season_num, season_episodes in sorted(episodes_by_season.items()):
+            season = Season(
+                show_name=show_name,
+                season_number=season_num,
+                episodes=season_episodes,
+                original_folder=folder_path
+            )
+            seasons.append(season)
+            self.logger.debug(f"  Created Season {season_num} with {len(season_episodes)} episodes")
         
         return TVShow(
             name=show_name,
-            seasons=[season],
+            seasons=seasons,
             original_folder=folder_path,
             folder_type=FolderType.DIRECT_FILES
         )
@@ -629,7 +680,8 @@ class TVShowOrganizer:
                 continue
             
             # Extract season number from folder name (initial attempt)
-            folder_season = extract_season_number(subdir.name, None)
+            # Use mode='folder' to exclude episode count patterns like "xx集"
+            folder_season = extract_season_number(subdir.name, None, mode='folder')
             if folder_season:
                 self.logger.debug(f"    Extracted season {folder_season} from folder name: {subdir.name}")
             
@@ -1195,8 +1247,10 @@ class TVShowOrganizer:
             metadata = self.fetch_tmdb_metadata(tv_show_info, folder_path=folder_path)
             return folder_name, metadata
         
-        # Fetch metadata in parallel (max_workers=5)
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        # Fetch metadata sequentially (max_workers=1) with rate limit 50 req/sec
+        # Sequential processing ensures no concurrent requests while rate limit
+        # allows fast sequential processing without waiting
+        with ThreadPoolExecutor(max_workers=1) as executor:
             future_to_folder = {executor.submit(fetch_metadata_for_show, folder): folder for folder in show_folders}
             for future in as_completed(future_to_folder):
                 try:

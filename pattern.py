@@ -42,7 +42,7 @@ METADATA_PATTERNS = [
     (r'全\s*\d+\s*集', 0, 'Episode count pattern'),
     
     # Video resolutions (1080p, 720p, 480p, etc.)
-    (r'\b(?:1080|720|480|360|240|2160|1440|4320)[pi]?\b', re.IGNORECASE, 'Video resolutions'),
+    (r'\b(?:1080|720|576|480|360|240|2160|1440|4320)[pi]?\b', re.IGNORECASE, 'Video resolutions'),
     # 2K/4K/8K resolution - handle cases where K is followed by Chinese characters or other non-alphanumeric
     (r'[248]K(?![a-zA-Z0-9])', re.IGNORECASE, '2K/4K/8K resolution'),
     
@@ -126,11 +126,25 @@ def normalize_metadata(text: str, preserve_years: bool = True) -> str:
     return normalized
 
 
-def extract_season_number(text: str, fallback: int = 1) -> int:
-    """Extract season number from text using regex patterns including Chinese"""
+def extract_season_number(text: str, fallback: int = 1, mode: str = 'file') -> int:
+    """Extract season number from text using regex patterns including Chinese
+    
+    Args:
+        text: Input text (filename or folder name)
+        fallback: Default season number if none found (default: 1)
+        mode: 'folder' for folder names, 'file' for episode files (default: 'file')
+              When mode='folder', excludes episode count patterns like "xx集" from being detected as season numbers
+    """
     # Normalize text first: remove common metadata patterns
     # This prevents metadata like "4K", "H264", "1080p" from being mistaken as season numbers
     text = normalize_metadata(text, preserve_years=True)
+    
+    # For folder mode, remove episode count patterns (xx集) before extracting season
+    # This prevents "78集" (78 episodes) from being detected as season 78
+    if mode == 'folder':
+        # Remove patterns like "78集", "全78集", "共78集" (episode count, not season)
+        text = re.sub(r'(?:全|共|总)?\d+集', ' ', text)
+        text = re.sub(r'\s+', ' ', text).strip()
     
     for pattern_idx, pattern in enumerate(SEASON_PATTERNS):
         match = re.search(pattern, text, re.IGNORECASE)

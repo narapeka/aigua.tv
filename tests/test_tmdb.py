@@ -30,7 +30,7 @@ def test_tmdb_client_initialization():
         logger = setup_logging(log_file, verbose=True)
         client = create_tmdb_client_from_config(config, logger)
         
-        print(f"✓ Client initialized successfully")
+        print(f"[OK] Client initialized successfully")
         print(f"  API Key: {config.tmdb.api_key[:10]}...")
         print(f"  Languages: {config.tmdb.languages}")
         print(f"  Default Language: {config.tmdb.language}")
@@ -42,7 +42,7 @@ def test_tmdb_client_initialization():
         
         return client, logger
     except Exception as e:
-        print(f"✗ Failed to initialize client: {e}")
+        print(f"[FAIL] Failed to initialize client: {e}")
         return None, None
 
 
@@ -63,7 +63,7 @@ def test_search_with_tmdbid(client: TMDBClient, logger):
         )
         
         if result:
-            print(f"✓ Found TV show: {result.name}")
+            print(f"[OK] Found TV show: {result.name}")
             print(f"\n  Basic Information:")
             print(f"    ID: {result.id}")
             print(f"    Name: {result.name}")
@@ -133,10 +133,10 @@ def test_search_with_tmdbid(client: TMDBClient, logger):
             
             return True
         else:
-            print(f"✗ No result found")
+            print(f"[FAIL] No result found")
             return False
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"[FAIL] Error: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -165,7 +165,7 @@ def test_search_with_cn_name(client: TMDBClient, logger):
             )
             
             if result:
-                print(f"    ✓ Found: {result.name}")
+                print(f"    [OK] Found: {result.name}")
                 print(f"      ID: {result.id}")
                 print(f"      Original Name: {result.original_name}")
                 print(f"      Year: {result.year}")
@@ -185,9 +185,9 @@ def test_search_with_cn_name(client: TMDBClient, logger):
                     print(f"      Total Episodes Retrieved: {total_episodes}")
                 success_count += 1
             else:
-                print(f"    ✗ No result found")
+                print(f"    [FAIL] No result found")
         except Exception as e:
-            print(f"    ✗ Error: {e}")
+            print(f"    [FAIL] Error: {e}")
             import traceback
             traceback.print_exc()
     
@@ -217,7 +217,7 @@ def test_search_with_en_name(client: TMDBClient, logger):
             )
             
             if result:
-                print(f"    ✓ Found: {result.name}")
+                print(f"    [OK] Found: {result.name}")
                 print(f"      ID: {result.id}")
                 print(f"      Original Name: {result.original_name}")
                 print(f"      Year: {result.year}")
@@ -237,9 +237,9 @@ def test_search_with_en_name(client: TMDBClient, logger):
                     print(f"      Total Episodes Retrieved: {total_episodes}")
                 success_count += 1
             else:
-                print(f"    ✗ No result found")
+                print(f"    [FAIL] No result found")
         except Exception as e:
-            print(f"    ✗ Error: {e}")
+            print(f"    [FAIL] Error: {e}")
             import traceback
             traceback.print_exc()
     
@@ -269,14 +269,14 @@ def test_search_without_year(client: TMDBClient, logger):
             )
             
             if result:
-                print(f"    ✓ Found: {result.name}")
+                print(f"    [OK] Found: {result.name}")
                 print(f"      Year: {result.year}")
                 print(f"      Match Confidence: {result.match_confidence}")
                 success_count += 1
             else:
-                print(f"    ✗ No result found")
+                print(f"    [FAIL] No result found")
         except Exception as e:
-            print(f"    ✗ Error: {e}")
+            print(f"    [FAIL] Error: {e}")
     
     print(f"\n  Summary: {success_count}/{len(test_cases)} successful")
     return success_count > 0
@@ -300,7 +300,7 @@ def test_alternative_titles(client: TMDBClient, logger):
         matching_titles = []
         
         if result and result.alternative_titles:
-            print(f"✓ Found {len(result.alternative_titles)} alternative titles")
+            print(f"[OK] Found {len(result.alternative_titles)} alternative titles")
             print(f"\n  All Alternative Titles:")
             for i, alt_title in enumerate(result.alternative_titles, 1):
                 print(f"    {i}. {alt_title.title} (iso_3166_1: {alt_title.iso_3166_1})")
@@ -310,7 +310,7 @@ def test_alternative_titles(client: TMDBClient, logger):
             matching_titles = [alt.title for alt in result.alternative_titles if alt.title and folder_name_lower in alt.title.lower()]
         
         if result and result.translations:
-            print(f"\n✓ Found {len(result.translations)} translations")
+            print(f"\n[OK] Found {len(result.translations)} translations")
             print(f"\n  All Translations:")
             for i, trans in enumerate(result.translations, 1):
                 print(f"    {i}. {trans.name} (iso_3166_1: {trans.iso_3166_1})")
@@ -331,12 +331,12 @@ def test_alternative_titles(client: TMDBClient, logger):
             print(f"\n  No alternative titles or translations match folder name '{test_folder_name}'")
             return True
         else:
-            print(f"✗ No alternative titles found")
+            print(f"[FAIL] No alternative titles found")
             if result:
                 print(f"  Result exists but alternative_titles is empty or None")
             return False
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"[FAIL] Error: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -358,7 +358,7 @@ def test_seasons_and_episodes(client: TMDBClient, logger):
         )
         
         if result and result.seasons:
-            print(f"✓ Retrieved {len(result.seasons)} seasons")
+            print(f"[OK] Retrieved {len(result.seasons)} seasons")
             total_episodes = sum(len(s['episodes']) for s in result.seasons)
             print(f"  Total Episodes: {total_episodes}")
             
@@ -384,28 +384,28 @@ def test_seasons_and_episodes(client: TMDBClient, logger):
             
             # Verify data structure
             print(f"\n  Data Structure Verification:")
-            print(f"    ✓ All seasons have 'season_number' field")
-            print(f"    ✓ All seasons have 'episodes' list")
+            print(f"    [OK] All seasons have 'season_number' field")
+            print(f"    [OK] All seasons have 'episodes' list")
             for season in result.seasons:
                 episodes = season.episodes
                 if episodes:
                     first_ep = episodes[0]
                     has_ep_num = hasattr(first_ep, 'episode_number')
                     has_title = hasattr(first_ep, 'title')
-                    print(f"    ✓ Episodes have 'episode_number': {has_ep_num}")
-                    print(f"    ✓ Episodes have 'title': {has_title}")
+                    print(f"    [OK] Episodes have 'episode_number': {has_ep_num}")
+                    print(f"    [OK] Episodes have 'title': {has_title}")
                     break
             
             return True
         else:
-            print(f"✗ No seasons/episodes data")
+            print(f"[FAIL] No seasons/episodes data")
             if result:
                 print(f"  Result exists but seasons is empty or None")
                 print(f"  Match Confidence: {result.match_confidence}")
                 print(f"  (Seasons only retrieved if confidence is 'high')")
             return False
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"[FAIL] Error: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -420,7 +420,7 @@ def main():
     # Initialize client
     client, logger = test_tmdb_client_initialization()
     if not client:
-        print("\n✗ Cannot proceed without client initialization")
+        print("\n[FAIL] Cannot proceed without client initialization")
         return 1
     
     # Run tests
@@ -442,7 +442,7 @@ def main():
     total = len(test_results)
     
     for test_name, result in test_results:
-        status = "✓ PASS" if result else "✗ FAIL"
+        status = "[PASS]" if result else "[FAIL]"
         print(f"{status}: {test_name}")
     
     print(f"\nTotal: {passed}/{total} tests passed")
