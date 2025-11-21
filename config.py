@@ -217,3 +217,63 @@ def load_config(config_path: Optional[str] = None) -> Config:
     # Convert to Config object
     return Config.from_dict(config_data)
 
+
+def save_config(config: Config, config_path: Optional[str] = None) -> None:
+    """
+    Save configuration to YAML file
+    
+    Args:
+        config: Config object to save
+        config_path: Path to config.yaml file. If None, looks for config.yaml
+                     in the current directory or script directory.
+    
+    Raises:
+        FileNotFoundError: If config file doesn't exist
+        yaml.YAMLError: If config file cannot be written
+    """
+    # Find config file
+    if config_path is None:
+        # Try current directory first
+        current_dir = Path.cwd()
+        config_file = current_dir / 'config.yaml'
+        
+        # If not found, try script directory
+        if not config_file.exists():
+            script_dir = Path(__file__).parent
+            config_file = script_dir / 'config.yaml'
+    else:
+        config_file = Path(config_path)
+    
+    if not config_file.exists():
+        raise FileNotFoundError(
+            f"Configuration file not found: {config_file}\n"
+            f"Please create config.yaml first."
+        )
+    
+    # Convert Config object to dictionary
+    config_dict = {
+        'llm': {
+            'api_key': config.llm.api_key,
+            'base_url': config.llm.base_url or '',
+            'model': config.llm.model,
+            'batch_size': config.llm.batch_size,
+            'rate_limit': config.llm.rate_limit
+        },
+        'tmdb': {
+            'api_key': config.tmdb.api_key,
+            'languages': config.tmdb.languages,
+            'rate_limit': config.tmdb.rate_limit
+        }
+    }
+    
+    # Add proxy if configured
+    if config.proxy:
+        config_dict['proxy'] = {
+            'host': config.proxy.host,
+            'port': config.proxy.port
+        }
+    
+    # Write to YAML file
+    with open(config_file, 'w', encoding='utf-8') as f:
+        yaml.dump(config_dict, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+

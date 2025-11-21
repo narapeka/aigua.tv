@@ -1,9 +1,15 @@
 # TV Show Media Library Organizer Requirements
 
 # Core dependencies
-openai>=1.0.0  # Required for llm.py LLM functionality
-pyyaml>=6.0.0  # Required for config.py YAML configuration loading
-tmdbv3api>=2.0.0  # Required for tmdb.py TMDB API integration
+openai>=2.8.1  # Required for llm.py LLM functionality
+pyyaml>=6.0.3  # Required for config.py YAML configuration loading
+tmdbv3api>=1.9.0  # Required for tmdb.py TMDB API integration
+
+# Web UI dependencies
+fastapi>=0.121.3  # FastAPI web framework
+uvicorn[standard]>=0.38.0  # ASGI server
+python-multipart>=0.0.20  # For file uploads
+pydantic>=2.12.4  # For request/response models
 
 # Python 3.6+ required for:
 # - pathlib (Path objects)

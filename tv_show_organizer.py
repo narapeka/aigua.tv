@@ -15,7 +15,7 @@ import shutil
 import argparse
 import logging
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
 
@@ -987,7 +987,8 @@ class TVShowOrganizer:
                 
                 season_details = {
                     'season_number': season.season_number,
-                    'episodes': []
+                    'episodes': [],
+                    'original_folder': str(season.original_folder) if season.original_folder else None
                 }
                 
                 # Track files in this season's original folder (for season subfolders case)
@@ -1208,6 +1209,12 @@ class TVShowOrganizer:
             self.logger.warning("No subdirectories found in input directory")
             return False
         
+        # Filter by selected folders if specified
+        selected_folders = getattr(self, '_selected_folders', None)
+        if selected_folders:
+            show_folders = [f for f in show_folders if f.name in selected_folders]
+            self.logger.info(f"Filtered to {len(show_folders)} selected folders")
+        
         self.logger.info(f"Found {len(show_folders)} potential TV show folders")
         
         # Step 2: Batch extract TV show info using LLM agent (all folders at once)
@@ -1244,6 +1251,19 @@ class TVShowOrganizer:
             """Helper function to fetch metadata for a single show"""
             folder_name = folder_path.name
             tv_show_info = folder_info_map.get(folder_name, TVShowInfo(folder_name=folder_name))
+            
+            # Check for manual match override
+            manual_matches = getattr(self, '_manual_matches', {})
+            if folder_name in manual_matches:
+                tmdb_id = manual_matches[folder_name]
+                try:
+                    metadata = self.tmdb_client.get_tv_show_details(tmdb_id)
+                    if metadata:
+                        metadata.match_confidence = 'high'
+                        return folder_name, metadata
+                except Exception as e:
+                    self.logger.warning(f"Failed to fetch manual match for {folder_name}: {e}, falling back to search")
+            
             metadata = self.fetch_tmdb_metadata(tv_show_info, folder_path=folder_path)
             return folder_name, metadata
         
@@ -1364,6 +1384,134 @@ class TVShowOrganizer:
                     })
         
         return success_count > 0
+    
+    def get_preview_data(self) -> Dict[str, Any]:
+        """
+        Get structured preview data for web UI
+        
+        Returns:
+            Dictionary with shows, stats, and metadata
+        """
+        shows_data = []
+        
+        # Include processed shows
+        for show_detail in self.processed_shows:
+            # Enhance seasons with original folder info
+            enhanced_seasons = []
+            for season_detail in show_detail.get('seasons', []):
+                enhanced_season = season_detail.copy()
+                # Add original_folder if available (for season_subfolders)
+                if 'original_folder' in season_detail:
+                    enhanced_season['original_folder'] = str(season_detail['original_folder'])
+                enhanced_seasons.append(enhanced_season)
+            
+            show_data = {
+                'folder_name': show_detail['name'],
+                'detected_name': show_detail['name'],
+                'cn_name': None,
+                'en_name': None,
+                'tmdb_match': None,
+                'match_confidence': None,
+                'selected': True,
+                'seasons': enhanced_seasons,
+                'original_folder': show_detail['original_folder'],
+                'folder_type': show_detail['folder_type']
+            }
+            shows_data.append(show_data)
+        
+        # Include unprocessed shows (for manual matching)
+        for unprocessed in self.unprocessed_shows:
+            show_data = {
+                'folder_name': unprocessed['folder_name'],
+                'detected_name': unprocessed['folder_name'],
+                'cn_name': None,
+                'en_name': None,
+                'tmdb_match': None,
+                'match_confidence': None,
+                'selected': False,
+                'seasons': [],
+                'original_folder': str(self.input_dir / unprocessed['folder_name']),
+                'folder_type': 'unknown',
+                'reason': unprocessed.get('reason', 'unknown')
+            }
+            shows_data.append(show_data)
+        
+        return {
+            'shows': shows_data,
+            'stats': self.stats.copy(),
+            'start_time': self.start_time.isoformat() if self.start_time else None,
+            'dry_run': self.dry_run
+        }
+    
+    def scan_and_preview(self, selected_folders: Optional[List[str]] = None, 
+                        manual_matches: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
+        """
+        Scan and create preview without organizing (for web UI)
+        
+        Args:
+            selected_folders: Optional list of folder names to include (None = all)
+            manual_matches: Optional dict mapping folder_name -> tmdb_id for manual matches
+        
+        Returns:
+            Dictionary with preview data
+        """
+        # Store original state
+        original_dry_run = self.dry_run
+        self.dry_run = True  # Always dry-run for preview
+        
+        try:
+            # Scan and organize (dry-run)
+            self.scan_and_organize()
+            
+            # Get preview data
+            preview_data = self.get_preview_data()
+            
+            # Apply manual matches if provided
+            if manual_matches:
+                for show in preview_data['shows']:
+                    folder_name = show['folder_name']
+                    if folder_name in manual_matches:
+                        # Fetch TMDB metadata for manual match
+                        tmdb_id = manual_matches[folder_name]
+                        try:
+                            metadata = self.tmdb_client.get_tv_show_details(tmdb_id)
+                            if metadata:
+                                show['tmdb_match'] = metadata.to_dict()
+                                show['match_confidence'] = 'high'
+                        except Exception as e:
+                            self.logger.warning(f"Failed to fetch manual match for {folder_name}: {e}")
+            
+            # Filter by selected folders if provided
+            if selected_folders:
+                preview_data['shows'] = [
+                    show for show in preview_data['shows']
+                    if show['folder_name'] in selected_folders
+                ]
+            
+            return preview_data
+        finally:
+            # Restore original state
+            self.dry_run = original_dry_run
+    
+    def organize_selected(self, selected_folders: List[str], 
+                         manual_matches: Optional[Dict[str, int]] = None) -> bool:
+        """
+        Organize only selected folders (for web UI)
+        
+        Args:
+            selected_folders: List of folder names to process
+            manual_matches: Optional dict mapping folder_name -> tmdb_id for manual matches
+        
+        Returns:
+            True if successful
+        """
+        # This will be implemented by modifying scan_and_organize to filter
+        # For now, we'll use a simpler approach: store selected folders and filter in scan_and_organize
+        self._selected_folders = set(selected_folders)
+        self._manual_matches = manual_matches or {}
+        
+        # Run normal scan and organize (it will use the stored selections)
+        return self.scan_and_organize()
     
     def print_summary(self):
         """Print operation summary"""
