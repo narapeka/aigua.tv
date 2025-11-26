@@ -119,11 +119,38 @@ class TMDBConfig:
 
 
 @dataclass
+class CategoryConfig:
+    """Category classification configuration"""
+    enabled: bool = True  # Enable/disable category-based organization
+    path: Optional[str] = None  # Custom path to category.yaml (None = use default)
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> Optional['CategoryConfig']:
+        """Create CategoryConfig from dictionary"""
+        if not data:
+            # No category section in config - use defaults (enabled with default path)
+            return cls()
+        
+        enabled = data.get('enabled', True)
+        # Convert string 'true'/'false' to bool
+        if isinstance(enabled, str):
+            enabled = enabled.lower() in ('true', 'yes', '1')
+        
+        path = data.get('path')
+        # Convert empty string to None
+        if path == '' or path == 'null':
+            path = None
+        
+        return cls(enabled=enabled, path=path)
+
+
+@dataclass
 class Config:
     """Complete application configuration"""
     llm: LLMConfig
     tmdb: TMDBConfig
     proxy: Optional[ProxyConfig] = None
+    category: Optional[CategoryConfig] = None
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Config':
@@ -165,10 +192,15 @@ class Config:
         proxy_data = data.get('proxy')
         proxy = ProxyConfig.from_dict(proxy_data) if proxy_data else None
         
+        # Load category configuration (optional)
+        category_data = data.get('category')
+        category = CategoryConfig.from_dict(category_data)
+        
         return cls(
             llm=llm_config,
             tmdb=tmdb_config,
-            proxy=proxy
+            proxy=proxy,
+            category=category
         )
 
 

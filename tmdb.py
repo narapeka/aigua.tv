@@ -61,6 +61,10 @@ class TVShowMetadata:
     seasons: Optional[List[Season]] = None
     match_confidence: Optional[str] = None
     search_language: Optional[str] = None
+    # Category-relevant fields
+    genre_ids: Optional[List[int]] = None  # TMDB genre IDs (16=Animation, 99=Documentary, etc.)
+    origin_country: Optional[List[str]] = None  # Country codes (CN, JP, US, etc.)
+    original_language: Optional[str] = None  # Language code (zh, en, ja, etc.)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
@@ -97,7 +101,10 @@ class TVShowMetadata:
             'translations': translations_dict,
             'seasons': seasons_dict,
             'match_confidence': self.match_confidence,
-            'search_language': self.search_language
+            'search_language': self.search_language,
+            'genre_ids': self.genre_ids,
+            'origin_country': self.origin_country,
+            'original_language': self.original_language
         }
 
 
@@ -1078,6 +1085,20 @@ class TMDBClient:
         translations = self._extract_translations(full_details)
         candidate.translations = translations
         
+        # Extract category-relevant fields from full details (more complete than search results)
+        # genre_ids from 'genres' in details API
+        if 'genres' in full_details:
+            genres = full_details.get('genres', [])
+            candidate.genre_ids = [g.get('id') for g in genres if g.get('id')]
+        
+        # origin_country from details API
+        if 'origin_country' in full_details:
+            candidate.origin_country = full_details.get('origin_country')
+        
+        # original_language from details API
+        if 'original_language' in full_details:
+            candidate.original_language = full_details.get('original_language')
+        
         # Ensure Chinese name if needed
         self._ensure_chinese_name(candidate, full_details)
         
@@ -1678,11 +1699,27 @@ class TMDBClient:
         # Extract year from first_air_date
         year = self._extract_year_from_date(result.get('first_air_date'))
         
+        # Extract genre_ids - may be in 'genre_ids' (search results) or 'genres' (details)
+        genre_ids = result.get('genre_ids')
+        if genre_ids is None and 'genres' in result:
+            # Details API returns genres as list of dicts with 'id' and 'name'
+            genres = result.get('genres', [])
+            genre_ids = [g.get('id') for g in genres if g.get('id')]
+        
+        # Extract origin_country - list of country codes (e.g., ["CN", "US"])
+        origin_country = result.get('origin_country')
+        
+        # Extract original_language - language code (e.g., "zh", "en", "ja")
+        original_language = result.get('original_language')
+        
         return TVShowMetadata(
             id=result.get('id', 0),
             name=result.get('name', ''),
             original_name=result.get('original_name'),
-            year=year
+            year=year,
+            genre_ids=genre_ids,
+            origin_country=origin_country,
+            original_language=original_language
         )
 
 

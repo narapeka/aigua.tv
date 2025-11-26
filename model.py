@@ -73,4 +73,5 @@ class TVShow:
     year: Optional[int] = None  # Release year
     tmdb_id: Optional[int] = None  # TMDB ID
     match_confidence: Optional[str] = None  # Confidence level (high/medium/low)
+    category: Optional[str] = None  # Category classification (e.g., 国产剧, 日番, 纪录片)
 

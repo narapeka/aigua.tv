@@ -27,6 +27,7 @@ from llm import LLMAgent, TVShowInfo
 from tmdb import TMDBClient, TVShowMetadata, create_tmdb_client_from_config
 from cache import TVShowCache, FolderStructureCache
 from config import load_config
+from category import CategoryHelper
 
 class TVShowOrganizer:
     """Main class for organizing TV show media library"""
@@ -83,6 +84,20 @@ class TVShowOrganizer:
             self.tmdb_client = create_tmdb_client_from_config(self.config, self.logger)
             self.cache = TVShowCache()
             self.folder_cache = FolderStructureCache()
+            
+            # Initialize CategoryHelper for genre-based organization
+            self.category_helper = None
+            if self.config.category and self.config.category.enabled:
+                category_path = Path(self.config.category.path) if self.config.category.path else None
+                self.category_helper = CategoryHelper(category_path=category_path, logger=self.logger)
+                if self.category_helper.is_enabled:
+                    self.logger.info(f"{Colors.GREEN}Category classification enabled with {len(self.category_helper.tv_category_names)} categories{Colors.RESET}")
+                else:
+                    self.logger.info(f"{Colors.YELLOW}Category classification disabled (no category.yaml found){Colors.RESET}")
+                    self.category_helper = None
+            else:
+                self.logger.info(f"{Colors.YELLOW}Category classification disabled in config{Colors.RESET}")
+            
             self.logger.info(f"{Colors.GREEN}LLM Agent and TMDB Client initialized{Colors.RESET}")
         except Exception as e:
             self.logger.error(f"{Colors.RED}Failed to initialize LLM/TMDB: {e}{Colors.RESET}")
@@ -935,6 +950,8 @@ class TVShowOrganizer:
         
         try:
             # Generate folder name using TMDB metadata: {tmdb_name} ({year}) {{tmdb-{tmdb_id}}}
+            # Optionally add category subfolder: {output_dir}/{category}/{folder_name}
+            category = None
             if tv_show.tmdb_metadata:
                 # Always use TMDB metadata name for organizing
                 show_name = tv_show.tmdb_metadata.name
@@ -952,6 +969,12 @@ class TVShowOrganizer:
                     folder_name = show_name
                 tmdb_show_name = tv_show.tmdb_metadata.name
                 
+                # Determine category for this show
+                if self.category_helper:
+                    category = self.category_helper.get_tv_category(tv_show.tmdb_metadata)
+                    if category:
+                        self.logger.info(f"  Category: {Colors.CYAN}{category}{Colors.RESET}")
+                
                 # Match episodes with TMDB metadata to get episode titles
                 for season in tv_show.seasons:
                     for episode in season.episodes:
@@ -960,11 +983,16 @@ class TVShowOrganizer:
                 folder_name = tv_show.name
                 tmdb_show_name = None
             
-            show_output_dir = self.output_dir / folder_name
+            # Build output path: {output_dir}/{category}/{folder_name} or {output_dir}/{folder_name}
+            if category:
+                show_output_dir = self.output_dir / category / folder_name
+            else:
+                show_output_dir = self.output_dir / folder_name
             show_details = {
                 'name': tv_show.name,
                 'folder_type': tv_show.folder_type.value,
                 'original_folder': str(tv_show.original_folder),
+                'category': category,
                 'seasons': []
             }
             

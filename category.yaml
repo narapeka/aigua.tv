@@ -1,0 +1,124 @@
+# TV Show Category Configuration
+# ================================
+# This file defines category rules for organizing TV shows into subfolders.
+# Categories are matched in order - the first matching category wins.
+# A category with no conditions (empty/null) acts as a fallback.
+#
+# Supported Matching Conditions:
+# ------------------------------
+#   genre_ids          - TMDB genre IDs (see dictionary below)
+#   origin_country     - Country codes (e.g., CN, JP, US)
+#   original_language  - Language codes (e.g., zh, en, ja)
+#   release_year       - First air date year (supports ranges like 2010-2020)
+#
+# Syntax:
+# -------
+#   - Multiple values: use comma separation (e.g., "CN,TW,HK")
+#   - Year ranges: use dash (e.g., "2010-2020")
+#   - Exclusions: prefix with ! (e.g., "!CN" to exclude China)
+#   - Multiple conditions: ALL must match (AND logic)
+#   - Multiple values in one condition: ANY can match (OR logic)
+
+# TV Show Categories
+tv:
+  # Chinese Animation (Donghua)
+  国漫:
+    genre_ids: '16'
+    origin_country: 'CN,TW,HK'
+  
+  # Japanese Anime
+  日番:
+    genre_ids: '16'
+    origin_country: 'JP'
+  
+  # Korean Animation
+  韩漫:
+    genre_ids: '16'
+    origin_country: 'KR'
+  
+  # Western Animation
+  欧美动画:
+    genre_ids: '16'
+    origin_country: 'US,GB,CA,AU,FR,DE'
+  
+  # Documentary
+  纪录片:
+    genre_ids: '99'
+  
+  # Kids/Children
+  儿童:
+    genre_ids: '10762'
+  
+  # Variety/Talk Shows
+  综艺:
+    genre_ids: '10764,10767'
+  
+  # Chinese Drama
+  国产剧:
+    origin_country: 'CN,TW,HK'
+  
+  # Japanese Drama (excluding anime)
+  日剧:
+    origin_country: 'JP'
+  
+  # Korean Drama
+  韩剧:
+    origin_country: 'KR'
+  
+  # Western Drama (US, UK, Europe)
+  欧美剧:
+    origin_country: 'US,GB,CA,AU,NZ,FR,DE,ES,IT,NL,PT,RU,SE,NO,DK,FI'
+  
+  # Other Asian Drama
+  亚洲剧:
+    origin_country: 'TH,IN,SG,MY,PH,VN,ID'
+  
+  # Fallback category - matches anything not caught above
+  未分类:
+
+
+# ============================================================================
+# TMDB Genre IDs Reference
+# ============================================================================
+# TV Show Genres:
+#   10759  Action & Adventure
+#   16     Animation
+#   35     Comedy
+#   80     Crime
+#   99     Documentary
+#   18     Drama
+#   10751  Family
+#   10762  Kids
+#   9648   Mystery
+#   10763  News
+#   10764  Reality
+#   10765  Sci-Fi & Fantasy
+#   10766  Soap
+#   10767  Talk
+#   10768  War & Politics
+#   37     Western
+#
+# ============================================================================
+# Common Country Codes (ISO 3166-1)
+# ============================================================================
+# CN  China (Mainland)        TW  Taiwan              HK  Hong Kong
+# JP  Japan                   KR  South Korea         KP  North Korea
+# US  United States           GB  United Kingdom      CA  Canada
+# AU  Australia               NZ  New Zealand         DE  Germany
+# FR  France                  IT  Italy               ES  Spain
+# RU  Russia                  IN  India               TH  Thailand
+# SG  Singapore               MY  Malaysia            PH  Philippines
+# VN  Vietnam                 ID  Indonesia           BR  Brazil
+# MX  Mexico                  AR  Argentina           SE  Sweden
+# NO  Norway                  DK  Denmark             FI  Finland
+# NL  Netherlands             PT  Portugal            PL  Poland
+#
+# ============================================================================
+# Common Language Codes (ISO 639-1)
+# ============================================================================
+# zh  Chinese                 en  English             ja  Japanese
+# ko  Korean                  fr  French              de  German
+# es  Spanish                 it  Italian             ru  Russian
+# pt  Portuguese              th  Thai                vi  Vietnamese
+# hi  Hindi                   ar  Arabic              tr  Turkish
+

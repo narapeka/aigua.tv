@@ -36,3 +36,9 @@ proxy:
   host: "http://127.0.0.1"  # Proxy host with protocol (http:// or https://)
   port: 8080  # Proxy port
 
+# Category-based organization configuration
+# Organizes TV shows into subfolders based on genre, country, etc.
+category:
+  enabled: true  # Set to false to disable category-based organization
+  path: ""  # Custom path to category.yaml (empty = use default in script directory)
+
