@@ -279,9 +279,14 @@ def generate_html_report(
                 <p><strong>Original Folder:</strong> <code>{show['original_folder']}</code></p>
 """
             for season in show['seasons']:
+                # Use "Specials" for season 0, otherwise "Season {number}"
+                if season['season_number'] == 0:
+                    season_title = "Specials"
+                else:
+                    season_title = f"Season {season['season_number']}"
                 html_content += f"""
                 <div class="season-section">
-                    <div class="season-title">Season {season['season_number']:02d} ({len(season['episodes'])} episodes)</div>
+                    <div class="season-title">{season_title} ({len(season['episodes'])} episodes)</div>
                     <ul class="episode-list">
 """
                 for episode in season['episodes']:

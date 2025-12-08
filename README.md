@@ -84,7 +84,7 @@ Input:
 Output:
 /Organized TV/
 └── Breaking Bad/
-    └── Season 01/
+    └── Season 1/
         ├── Breaking Bad - S01E01 - Episode 01.mp4
         ├── Breaking Bad - S01E02 - Episode 02.mp4
         └── Breaking Bad - S01E03 - Episode 03.mp4
@@ -105,10 +105,10 @@ Input:
 Output:
 /Organized TV/
 └── The Office/
-    ├── Season 01/
+    ├── Season 1/
     │   ├── The Office - S01E01 - Episode 01.mp4
     │   └── The Office - S01E02 - Episode 02.mp4
-    └── Season 02/
+    └── Season 2/
         ├── The Office - S02E01 - Episode 01.mkv
         └── The Office - S02E02 - Episode 02.mkv
 ```
@@ -158,9 +158,9 @@ INFO: Found 3 potential TV show folders
 
 Processing: Breaking Bad
 INFO: Processing show: Breaking Bad (Direct Files)
-INFO:   Organizing Season 01 -> Breaking Bad/Season 01
+INFO:   Organizing Season 1 -> Breaking Bad/Season 1
 INFO:     Moving: Breaking.Bad.S01E01.mp4
-INFO:     To: Breaking Bad/Season 01/Breaking Bad - S01E01 - Episode 01.mp4
+INFO:     To: Breaking Bad/Season 1/Breaking Bad - S01E01 - Episode 01.mp4
 INFO: ✓ Successfully processed: Breaking Bad
 
 ============================================================
