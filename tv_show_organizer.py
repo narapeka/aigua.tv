@@ -1009,9 +1009,14 @@ class TVShowOrganizer:
                 folder_file_counts[show_folder] = {'found': total_episodes, 'moved': 0}
             
             for season in tv_show.seasons:
-                season_dir = show_output_dir / f"Season {season.season_number}"
+                # Use "Specials" for season 0, otherwise "Season {number}"
+                if season.season_number == 0:
+                    season_folder_name = "Specials"
+                else:
+                    season_folder_name = f"Season {season.season_number}"
+                season_dir = show_output_dir / season_folder_name
 
-                self.logger.info(f"  Organizing Season {season.season_number} -> {Colors.GREEN}{season_dir.relative_to(self.output_dir)}{Colors.RESET}")
+                self.logger.info(f"  Organizing {season_folder_name} -> {Colors.GREEN}{season_dir.relative_to(self.output_dir)}{Colors.RESET}")
                 
                 season_details = {
                     'season_number': season.season_number,

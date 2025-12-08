@@ -1209,6 +1209,29 @@ class TMDBClient:
             
             num_seasons = details.get('number_of_seasons', 0)
             
+            # First, try to fetch season 0 (Specials) - it's not included in number_of_seasons
+            # Season 0 may not exist for all shows, so we handle errors gracefully
+            try:
+                season_0_details = self._call_api_with_rate_limit(lambda: self.season.details(tv_id, 0))
+                if season_0_details:
+                    episodes = []
+                    for episode in season_0_details.get('episodes', []):
+                        episodes.append(Episode(
+                            episode_number=episode.get('episode_number', 0),
+                            title=episode.get('name', '')
+                        ))
+                    
+                    if episodes:  # Only add season 0 if it has episodes
+                        seasons_data.append(Season(
+                            season_number=0,
+                            episodes=episodes
+                        ))
+                        self.logger.debug(f"Fetched season 0 (Specials) with {len(episodes)} episodes for TV show {tv_id}")
+            except Exception as e:
+                # Season 0 doesn't exist for this show, which is fine
+                self.logger.debug(f"Season 0 (Specials) not available for TV show {tv_id}: {e}")
+            
+            # Fetch regular seasons (1 to num_seasons)
             for season_num in range(1, num_seasons + 1):
                 try:
                     season_details = self._call_api_with_rate_limit(lambda: self.season.details(tv_id, season_num))
