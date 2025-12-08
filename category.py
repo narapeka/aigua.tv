@@ -98,13 +98,19 @@ class CategoryHelper:
             Category name string, or None if no match or categories not configured
         """
         if not self._tv_categories:
+            self.logger.debug("  Category matching disabled: no categories configured")
             return None
         
         if not tmdb_metadata:
+            self.logger.debug("  Category matching skipped: no TMDB metadata")
             return None
         
         # Build tmdb_info dict from TVShowMetadata attributes
         tmdb_info = self._metadata_to_dict(tmdb_metadata)
+        
+        # Log what we're matching against
+        show_name = getattr(tmdb_metadata, 'name', 'Unknown')
+        self.logger.debug(f"  Determining category for: {show_name}")
         
         return self._get_category(self._tv_categories, tmdb_info)
     
@@ -145,11 +151,22 @@ class CategoryHelper:
         if not categories:
             return None
         
+        # Log metadata for debugging
+        self.logger.debug(f"  Category matching - genre_ids: {tmdb_info.get('genre_ids')}, "
+                         f"origin_country: {tmdb_info.get('origin_country')}, "
+                         f"original_language: {tmdb_info.get('original_language')}, "
+                         f"year: {tmdb_info.get('year')}")
+        
+        # Track fallback category separately (category with no conditions)
+        fallback_category = None
+        
+        # First pass: try to match categories with conditions
         for category_name, conditions in categories.items():
-            # If no conditions, this is a fallback category
+            # Skip categories with no conditions - they're fallbacks
             if not conditions:
-                self.logger.debug(f"  Using fallback category: {category_name}")
-                return category_name
+                if fallback_category is None:
+                    fallback_category = category_name
+                continue
             
             # Check all conditions for this category
             match_flag = True
@@ -167,35 +184,69 @@ class CategoryHelper:
                     info_value = tmdb_info.get(attr)
                 
                 if not info_value:
+                    self.logger.debug(f"  Category '{category_name}': missing {attr} in metadata")
                     match_flag = False
-                    continue
+                    break  # No need to check other conditions if this one fails
+                
+                # Debug: log the actual type and value
+                self.logger.debug(f"  Category '{category_name}': checking {attr} - "
+                                f"type: {type(info_value).__name__}, value: {info_value}")
                 
                 # Convert info_value to list of strings for comparison
+                # Handle AsObj type from tmdbv3api library - it's iterable but not a list
+                if hasattr(info_value, '__iter__') and not isinstance(info_value, (str, bytes)):
+                    # Convert iterable (list, AsObj, tuple, etc.) to list
+                    try:
+                        info_value = list(info_value)
+                    except (TypeError, ValueError):
+                        # If conversion fails, treat as single value
+                        info_value = [info_value]
+                
                 if attr == "origin_country":
-                    # origin_country is already a list
+                    # origin_country should be a list from TMDB (e.g., ['JP', 'US'])
                     if isinstance(info_value, list):
-                        info_values = [str(val).upper() for val in info_value]
+                        info_values = [str(val).upper().strip() for val in info_value if val]
+                    elif isinstance(info_value, str):
+                        # Handle case where it might be a string (shouldn't happen, but be defensive)
+                        # If it's a comma-separated string, split it; otherwise use as single value
+                        if ',' in info_value:
+                            info_values = [v.upper().strip() for v in info_value.split(',') if v.strip()]
+                        else:
+                            info_values = [info_value.upper().strip()]
                     else:
-                        info_values = [str(info_value).upper()]
+                        info_values = [str(info_value).upper().strip()]
                 elif isinstance(info_value, list):
-                    info_values = [str(val).upper() for val in info_value]
+                    # genre_ids is a list of integers (e.g., [16, 18])
+                    info_values = [str(val).upper().strip() for val in info_value if val is not None]
                 else:
-                    info_values = [str(info_value).upper()]
+                    # Single value (e.g., original_language as string)
+                    info_values = [str(info_value).upper().strip()]
                 
                 # Parse condition value - handle comma separation, ranges, and exclusions
                 parsed_values, invert_values = self._parse_condition_value(str(value))
                 
                 # Check if any value matches (OR logic for multiple values)
                 if parsed_values and not set(parsed_values).intersection(set(info_values)):
+                    self.logger.debug(f"  Category '{category_name}': {attr} mismatch - "
+                                    f"expected any of {parsed_values}, got {info_values}")
                     match_flag = False
+                    break
                 
                 # Check if any excluded value matches (should NOT match)
                 if invert_values and set(invert_values).intersection(set(info_values)):
+                    self.logger.debug(f"  Category '{category_name}': {attr} excluded - "
+                                    f"got excluded value {set(invert_values).intersection(set(info_values))}")
                     match_flag = False
+                    break
             
             if match_flag:
                 self.logger.debug(f"  Matched category: {category_name}")
                 return category_name
+        
+        # If no category matched, use fallback if available
+        if fallback_category:
+            self.logger.debug(f"  No category matched, using fallback: {fallback_category}")
+            return fallback_category
         
         return None
     
