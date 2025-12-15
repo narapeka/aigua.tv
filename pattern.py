@@ -94,13 +94,14 @@ def normalize_metadata(text: str, preserve_years: bool = True) -> str:
     
     # First, handle audio codecs by removing everything after the codec name
     # Audio codecs typically appear at the end of filenames, followed by channel configs
-    # (e.g., AAC2.0, AAC5.1, TrueHD7.1.4, DTS-HDMA5.1)
+    # (e.g., AAC2.0, AAC5.1, TrueHD7.1.4, DTS-HDMA5.1, E-AC-3)
     # Remove everything after audio codec until we hit:
     # - Release group markers: -[GROUP], [GROUP], (GROUP)
     # - Quality indicators: Remux, WEB-DL, etc.
     # - File extension: .mkv, .mp4, etc.
     # Pattern matches: codec + optional channel config + everything until delimiter
-    audio_codec_with_suffix = r'\b(?:AAC|AC3|DTS(?:-HD(?:MA)?|HD(?:MA)?)?|DDP|E-AC3|FLAC|MP3|OGG|VORBIS|OPUS|PCM|TrueHD|DTSX|DTS:X|Atmos)[\s.]*(?:\d+\.\d+(?:\.\d+)?)?[^\w]*(?=[-\[\(]|(?:Remux|WEB-DL|WEBRip|BluRay|BDRip|DVDRip|HDTV|UHDTV|CAM|TS|TC|SCR|DVDScr|UHD)\b|\.(?:mkv|mp4|avi|mov|wmv|flv|webm|m4v|ts|m2ts|srt|ass|ssa|vtt|sub|idx|sup|pgs)(?:\s|$)|$)'
+    # Note: E-AC-3 and E-AC3 are both valid formats for Enhanced AC-3
+    audio_codec_with_suffix = r'\b(?:AAC|AC3|DTS(?:-HD(?:MA)?|HD(?:MA)?)?|DDP|E-AC-?3|E-AC3|FLAC|MP3|OGG|VORBIS|OPUS|PCM|TrueHD|DTSX|DTS:X|Atmos)[\s.-]*(?:\d+\.\d+(?:\.\d+)?)?[^\w]*(?=[-\[\(]|(?:Remux|WEB-DL|WEBRip|BluRay|BDRip|DVDRip|HDTV|UHDTV|CAM|TS|TC|SCR|DVDScr|UHD)\b|\.(?:mkv|mp4|avi|mov|wmv|flv|webm|m4v|ts|m2ts|srt|ass|ssa|vtt|sub|idx|sup|pgs)(?:\s|$)|$)'
     normalized = re.sub(audio_codec_with_suffix, ' ', normalized, flags=re.IGNORECASE)
     
     # Apply all metadata patterns from METADATA_PATTERNS
