@@ -380,7 +380,8 @@ class TVShowOrganizer:
             folder_season = extract_season_number(folder_path.name, None, mode='folder')
             
             # Validate folder_season - filter out unreasonable values
-            if folder_season and not (1 <= folder_season <= 100):
+            # Allow season 0 (Specials) as it's a valid season number
+            if folder_season is not None and not (0 <= folder_season <= 100):
                 folder_season = None
             
             # Also check first file for season number
@@ -574,15 +575,27 @@ class TVShowOrganizer:
         
         self.logger.info(f"Processing show: {Colors.CYAN}{show_name}{Colors.RESET} (Direct Files)")
         
-        # For direct files, default to Season 1 unless we find clear season info
-        # Try to extract season number from first file, but validate it
+        # For direct files, check folder name first for season number (e.g., "Euphoria.S00", "The.Outcast.S02")
+        # Use mode='folder' to exclude episode count patterns like "xx集"
+        folder_season = extract_season_number(folder_path.name, None, mode='folder')
+        
+        # Validate folder_season - allow season 0 (Specials) as it's a valid season number
+        if folder_season is not None and not (0 <= folder_season <= 100):
+            folder_season = None
+        
+        # Try to extract season number from first file as fallback
         first_file = video_files[0]
         detected_season, _, _ = extract_episode_info(first_file.name)
         
+        # Use folder season if available and valid, otherwise use file season
         # Only use detected season if it's reasonable (0-100), otherwise default to 1
         # Allow season 0 (Specials) if explicitly detected in filename
         # This prevents false matches from codec names (H265), years (2001), etc.
-        if detected_season == 0:
+        if folder_season is not None:
+            # Folder name has season info, use it
+            season_num = folder_season
+            self.logger.debug(f"  Using season {season_num} from folder name: {folder_path.name}")
+        elif detected_season == 0:
             # Check if filename has explicit season 0 patterns (S00, Season 0, etc.)
             has_explicit_season_0 = bool(re.search(
                 r'[Ss](?:eason\s*)?0{1,2}(?:[EePp]|\b)|第[零〇]季|零季',
@@ -1076,6 +1089,7 @@ class TVShowOrganizer:
                     self.logger.debug(f"    [DEBUG] Executor active threads: {file_operation_executor._threads}, queue size: {file_operation_executor._work_queue.qsize() if hasattr(file_operation_executor._work_queue, 'qsize') else 'N/A'}")
                     
                     # Collect results as they complete (maintain order for reporting)
+                    # Use original file path as key to handle multiple files per episode (e.g., .mkv and .srt)
                     episode_results = {}
                     completed_count = 0
                     start_time = datetime.now()
@@ -1087,12 +1101,14 @@ class TVShowOrganizer:
                         
                         try:
                             episode_details = future.result()
-                            episode_results[episode.episode_number] = episode_details
+                            # Use original file path as unique key to handle multiple files per episode
+                            episode_results[str(episode.original_path)] = episode_details
                             self.logger.debug(f"    [DEBUG] E{episode.episode_number:02d} result: status={episode_details.get('status')}, error={episode_details.get('error', 'None')}")
                         except Exception as e:
                             self.logger.error(f"Unexpected error processing episode {episode.episode_number}: {e}")
                             self.logger.debug(f"    [DEBUG] E{episode.episode_number:02d} exception type: {type(e).__name__}, message: {str(e)}")
-                            episode_results[episode.episode_number] = {
+                            # Use original file path as unique key to handle multiple files per episode
+                            episode_results[str(episode.original_path)] = {
                                 'episode_number': episode.episode_number,
                                 'original_file': episode.original_path.name,
                                 'original_path': str(episode.original_path),
@@ -1104,8 +1120,9 @@ class TVShowOrganizer:
                     
                     # Add episode details in episode number order for consistent reporting
                     for episode, new_path in episode_tasks:
-                        if episode.episode_number in episode_results:
-                            season_details['episodes'].append(episode_results[episode.episode_number])
+                        episode_key = str(episode.original_path)
+                        if episode_key in episode_results:
+                            season_details['episodes'].append(episode_results[episode_key])
                         else:
                             # Fallback if episode not in results
                             season_details['episodes'].append({

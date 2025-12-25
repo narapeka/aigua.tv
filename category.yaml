@@ -54,7 +54,7 @@ tv:
   
   # Western Drama (US, UK, Europe)
   欧美剧:
-    origin_country: 'US,GB,CA,AU,NZ,FR,DE,ES,IT,NL,PT,RU,SE,NO,DK,FI,IN'
+    origin_country: 'US,GB,CA,AU,NZ,FR,DE,ES,IT,NL,PT,PL,MX,RU,SE,NO,DK,FI,IN'
   
   # Fallback category - matches anything not caught above
   未分类:
