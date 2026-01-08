@@ -146,3 +146,182 @@ Thumbs.db
 .DS_Store
 *.tmp
 
+# ==================================================
+# Frontend / Node.js
+# ==================================================
+
+# Dependencies
+node_modules/
+jspm_packages/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+.nuxt/
+.cache/
+.parcel-cache/
+
+# Testing
+coverage/
+.nyc_output/
+
+# Environment variables
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor directories
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# Vite
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# TypeScript
+*.tsbuildinfo
+
+# ==================================================
+# Backend / FastAPI
+# ==================================================
+
+# FastAPI / Uvicorn
+*.db
+*.sqlite
+.uvicorn-*
+
+# Alembic
+alembic/versions/*.pyc
+
+# Redis dumps
+dump.rdb
+
+# ==================================================
+# WebUI Specific
+# ==================================================
+
+# Backend cache and jobs
+backend/.cache/
+backend/jobs/
+backend/temp/
+
+# Frontend build artifacts
+frontend/dist/
+frontend/.vite/
+frontend/.turbo/
+
+# Temporary files
+*.tmp
+*.temp
+.tmp/
+.temp/
+
+# User data and media (don't commit actual TV shows!)
+input/
+output/
+media/
+tv-shows/
+
+# ==================================================
+# Documentation builds
+# ==================================================
+
+# MkDocs
+site/
+
+# Sphinx
+docs/_build/
+docs/_static/
+docs/_templates/
+
+# ==================================================
+# Security & Secrets
+# ==================================================
+
+# API keys and credentials
+*.key
+*.pem
+*.crt
+secrets/
+.secrets/
+credentials.json
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Config backups with sensitive data
+config.yaml
+config.*.yaml
+!config.example.yaml
+!config.template.yaml
+
+# ==================================================
+# Development Tools
+# ==================================================
+
+# Python virtual environments
+venv/
+.venv/
+env/
+.env/
+virtualenv/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# pytest
+.pytest_cache/
+pytest-*.xml
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Ruff
+.ruff_cache/
+
+# ==================================================
+# CI/CD
+# ==================================================
+
+.github/workflows/*.local.yml
+.gitlab-ci.local.yml
+
+# ==================================================
+# Misc
+# ==================================================
+
+# Claude Code
+.claude/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+*~
+.directory
