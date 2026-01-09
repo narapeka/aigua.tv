@@ -139,7 +139,6 @@ config-*.yaml
 # Log files and reports
 logs/
 *.log
-*.html
 
 # OS files
 Thumbs.db
