@@ -42,7 +42,7 @@ class TVShowOrganizer:
     }
     
     
-    def __init__(self, input_dir: str, output_dir: str, dry_run: bool = False, verbose: bool = False, log_dir: Optional[str] = None):
+    def __init__(self, input_dir: str, output_dir: str, dry_run: bool = False, verbose: bool = False, log_dir: Optional[str] = None, config_path: Optional[str] = None):
         self.input_dir = Path(input_dir).resolve()
         self.output_dir = Path(output_dir).resolve()
         self.dry_run = dry_run
@@ -72,7 +72,7 @@ class TVShowOrganizer:
         
         # Load configuration and initialize LLM agent, TMDB client, and cache
         try:
-            self.config = load_config()
+            self.config = load_config(config_path=config_path)
             self.llm_agent = LLMAgent(
                 api_key=self.config.llm.api_key,
                 base_url=self.config.llm.base_url,
@@ -210,6 +210,26 @@ class TVShowOrganizer:
         name = re.sub(r'[^\w\s\-\.\(\)\u4e00-\u9fff]', '', name)  # Include Chinese characters
         name = re.sub(r'\s+', ' ', name)
         return name.strip()
+    
+    def extract_tags_from_folder_name(self, folder_name: str) -> Optional[str]:
+        """
+        Extract tags in the format #TAG# from folder name.
+        If multiple tags are found, returns only the last one.
+        
+        Args:
+            folder_name: Original folder name to extract tags from
+            
+        Returns:
+            The last tag found (without # symbols), or None if no tags found
+        """
+        # Pattern to match #TAG# format
+        pattern = r'#([^#]+)#'
+        matches = re.findall(pattern, folder_name)
+        
+        if matches:
+            # Return the last tag found
+            return matches[-1]
+        return None
     
     def scan_folders(self) -> List[Path]:
         """
@@ -995,6 +1015,11 @@ class TVShowOrganizer:
             else:
                 folder_name = tv_show.name
                 tmdb_show_name = None
+            
+            # Extract tags from original folder name and append to folder_name
+            tag = self.extract_tags_from_folder_name(tv_show.original_folder.name)
+            if tag:
+                folder_name = f"{folder_name} [{tag}]"
             
             # Build output path: {output_dir}/{category}/{folder_name} or {output_dir}/{folder_name}
             if category:
