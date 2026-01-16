@@ -72,6 +72,9 @@ METADATA_PATTERNS = [
     # Frame rates
     (r'\b\d+\s*帧\b', 0, 'Frame rates (Chinese)'),
     (r'\b\d+fps\b', re.IGNORECASE, 'Frame rates'),
+    
+    # Version numbers (V1, V2, V3, etc.) - not season numbers
+    (r'\b[Vv](?:ersion\s*)?\d+\b', re.IGNORECASE, 'Version numbers (V1, V2, Version 1, etc.)'),
 
 ]
 
