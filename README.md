@@ -34,7 +34,7 @@ chmod +x tv_show_organizer.py
 ### Basic Usage
 
 ```bash
-python tv_show_organizer.py "/path/to/tv/shows" "/path/to/organized" --dry-run
+python tv_show_organizer.py "H:\我的接收\电视剧" "H:\整理\手动整理"
 ```
 
 ### Command Line Options

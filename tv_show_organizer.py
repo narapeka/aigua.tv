@@ -36,9 +36,9 @@ class TVShowOrganizer:
     # Subtitle files are included so they go through the same episode/season detection logic
     MEDIA_EXTENSIONS = {
         # Video formats
-        '.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.ts', '.m2ts',
+        '.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.ts', '.m2ts', '.f4v',
         # Subtitle formats
-        '.srt', '.ass', '.ssa', '.vtt', '.sub', '.idx', '.sup', '.pgs'
+        '.srt', '.ass', '.ssa', '.vtt', '.sub', '.idx', '.sup', '.pgs', '.tp'
     }
     
     

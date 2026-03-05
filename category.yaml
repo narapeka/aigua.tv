@@ -32,12 +32,12 @@ tv:
     origin_country: 'JP,KR'
   
   # Western Animation
-  欧美动画:
+  美漫:
     genre_ids: '16'
-    origin_country: 'US,GB,CA,AU,FR,DE'
+    origin_country: 'US,GB,CA,AU,NZ,FR,DE,ES,IT,NL,PT,PL,MX,RU,SE,NO,DK,FI,IN'
   
   # Documentary
-  纪录片:
+  纪录:
     genre_ids: '99'
   
   # Variety/Talk Shows
@@ -46,11 +46,11 @@ tv:
   
   # Chinese Drama
   华语剧:
-    origin_country: 'CN,TW,HK'
+    origin_country: 'CN,TW,HK,SG'
   
   # Japanese Drama (excluding anime)
   日韩剧:
-    origin_country: 'JP,KR,TH,SG,MY,PH,VN,ID'
+    origin_country: 'JP,KR,TH,MY,PH,VN,ID'
   
   # Western Drama (US, UK, Europe)
   欧美剧:

@@ -28,6 +28,8 @@ EPISODE_PATTERNS = [
     r'(\d+)[xX](\d+)',  # 1x01 format
     r'第([一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾\d]+)集',  # 第六十集, 第1集
     r'([一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾]+)集',  # 六十集
+    r'第([一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾\d]+)话',  # 第27话, 第1话 (话 = episode in anime/donghua)
+    r'([一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾]+)话',  # 二十七话
     r'[Ee][Pp](\d+)',  # EP01, EP02 format (season-less, must come before [Ee](?:pisode\s*)? pattern)
     r'[Ee](?:pisode\s*)?(\d+)',  # Episode 01, E01, etc. (season-less)
     r'(\d+)-(\d+)',  # 1-09 format (season-episode or episode with dash)
@@ -76,6 +78,8 @@ METADATA_PATTERNS = [
     # Version numbers (V1, V2, V3, etc.) - not season numbers
     (r'\b[Vv](?:ersion\s*)?\d+\b', re.IGNORECASE, 'Version numbers (V1, V2, Version 1, etc.)'),
 
+    # Chinese TV channel (CCTV-1, CCTV9, CCTV-13, etc.) - channel number, not season
+    (r'\bCCTV-?\d{1,2}\b', re.IGNORECASE, 'CCTV channel (CCTV4, CCTV8, CCTV9, etc.)'),
 ]
 
 
@@ -337,8 +341,8 @@ def extract_episode_info(filename: str, position: int = 1) -> Tuple[int, int, Op
             except (ValueError, IndexError):
                 continue
     
-    # Try Chinese episode patterns
-    for pattern in EPISODE_PATTERNS[4:6]:  # 第六十集, 六十集
+    # Try Chinese episode patterns (集 and 话)
+    for pattern in EPISODE_PATTERNS[4:8]:  # 第X集, X集, 第X话, X话
         match = re.search(pattern, normalized_filename, re.IGNORECASE)
         if match:
             try:
@@ -353,7 +357,7 @@ def extract_episode_info(filename: str, position: int = 1) -> Tuple[int, int, Op
                 continue
     
     # Try explicit episode patterns (English) - EP01 format first
-    episode_pattern_ep = EPISODE_PATTERNS[6]  # r'[Ee][Pp](\d+)'
+    episode_pattern_ep = EPISODE_PATTERNS[8]  # r'[Ee][Pp](\d+)'
     match = re.search(episode_pattern_ep, normalized_filename, re.IGNORECASE)
     if match:
         try:
@@ -363,7 +367,7 @@ def extract_episode_info(filename: str, position: int = 1) -> Tuple[int, int, Op
             pass
     
     # Try Episode/E01 format
-    episode_pattern = EPISODE_PATTERNS[7]  # r'[Ee](?:pisode\s*)?(\d+)'
+    episode_pattern = EPISODE_PATTERNS[9]  # r'[Ee](?:pisode\s*)?(\d+)'
     match = re.search(episode_pattern, normalized_filename, re.IGNORECASE)
     if match:
         try:
@@ -375,7 +379,7 @@ def extract_episode_info(filename: str, position: int = 1) -> Tuple[int, int, Op
     # Try dash-separated pattern (e.g., 1-09, 10-20)
     # This is typically just episode number with dash separator
     # For cases like "红蜘蛛1-09.mp4", extract episode 9
-    dash_pattern = EPISODE_PATTERNS[8]  # r'(\d+)-(\d+)'
+    dash_pattern = EPISODE_PATTERNS[10]  # r'(\d+)-(\d+)'
     match = re.search(dash_pattern, normalized_filename, re.IGNORECASE)
     if match:
         try:
@@ -418,7 +422,7 @@ def extract_episode_info(filename: str, position: int = 1) -> Tuple[int, int, Op
             if 1 <= detected_season <= 100:  # Valid season range
                 season_num = detected_season
     
-    number_pattern = EPISODE_PATTERNS[9]  # r'(?:^|\D)(\d{1,3})(?:\D|$)' 
+    number_pattern = EPISODE_PATTERNS[11]  # r'(?:^|\D)(\d{1,3})(?:\D|$)' 
     
     # Find all potential matches and filter out false positives
     all_matches = list(re.finditer(number_pattern, name_without_ext, re.IGNORECASE))

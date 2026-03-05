@@ -872,7 +872,7 @@ class TMDBClient:
     
     def _get_full_tv_details(self, tv_id: int) -> Optional[Dict[str, Any]]:
         """
-        Get full TV show details including alternative_titles and translations
+        Get full TV show details including alternative_titles, translations, and content_ratings (certifications per country, e.g. US=TV-MA, IT=VM14)
         
         Args:
             tv_id: TMDB TV show ID
@@ -913,6 +913,20 @@ class TMDBClient:
                 else:
                     self.logger.debug(f"Could not fetch translations for {tv_id}: {e}")
                 details['translations'] = {}
+            
+            # Add small delay between rapid sequential calls
+            time.sleep(self.min_request_interval * 0.5)
+            
+            # Get content ratings (certifications per country, e.g. US=TV-MA, IT=VM14)
+            try:
+                content_ratings = self._call_api_with_rate_limit(lambda: self.tv.content_ratings(tv_id))
+                details['content_ratings'] = content_ratings
+            except Exception as e:
+                if self._is_retryable_error(e):
+                    self.logger.warning(f"Connection error fetching content_ratings for {tv_id} after retries: {e}")
+                else:
+                    self.logger.debug(f"Could not fetch content_ratings for {tv_id}: {e}")
+                details['content_ratings'] = {}
             
             return details
             
