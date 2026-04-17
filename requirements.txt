@@ -4,6 +4,7 @@
 openai>=1.0.0  # Required for llm.py LLM functionality
 pyyaml>=6.0.0  # Required for config.py YAML configuration loading
 tmdbv3api>=2.0.0  # Required for tmdb.py TMDB API integration
+OpenCC>=1.1.9  # Required for Traditional/Simplified Chinese title normalization
 
 # Python 3.6+ required for:
 # - pathlib (Path objects)

@@ -4,6 +4,7 @@ Test script for tmdb.py
 Tests TMDB client functionality using real config.yaml
 """
 
+import logging
 import sys
 import tempfile
 from pathlib import Path
@@ -12,8 +13,54 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import load_config
-from tmdb import create_tmdb_client_from_config, TMDBClient
+from tmdb import create_tmdb_client_from_config, TMDBClient, TVShowMetadata
 from logger import setup_logging
+
+
+def test_ensure_chinese_name_prefers_simplified_when_current_title_is_traditional():
+    """Prefer a Simplified Chinese title when the current TMDB title is Traditional Chinese."""
+    client = TMDBClient(api_key="test", logger=logging.getLogger(__name__))
+    result = TVShowMetadata(id=137967, name="新聞記者")
+    tmdb_info = {
+        "alternative_titles": {
+            "results": [
+                {"iso_3166_1": "CN", "title": "新闻记者"},
+            ]
+        },
+        "translations": {
+            "translations": [
+                {"iso_3166_1": "TW", "data": {"name": "新聞記者"}},
+                {"iso_3166_1": "CN", "data": {"name": ""}},
+                {"iso_3166_1": "SG", "data": {"name": "新闻记者"}},
+            ]
+        },
+    }
+
+    client._ensure_chinese_name(result, tmdb_info)
+
+    assert result.name == "新闻记者"
+
+
+def test_ensure_chinese_name_keeps_existing_simplified_title():
+    """Keep an existing Simplified Chinese title unchanged."""
+    client = TMDBClient(api_key="test", logger=logging.getLogger(__name__))
+    result = TVShowMetadata(id=137967, name="新闻记者")
+    tmdb_info = {
+        "alternative_titles": {
+            "results": [
+                {"iso_3166_1": "CN", "title": "新聞記者"},
+            ]
+        },
+        "translations": {
+            "translations": [
+                {"iso_3166_1": "TW", "data": {"name": "新聞記者"}},
+            ]
+        },
+    }
+
+    client._ensure_chinese_name(result, tmdb_info)
+
+    assert result.name == "新闻记者"
 
 
 def test_tmdb_client_initialization():

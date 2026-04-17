@@ -14,6 +14,7 @@ import re
 import shutil
 import argparse
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from datetime import datetime
@@ -38,7 +39,7 @@ class TVShowOrganizer:
         # Video formats
         '.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.ts', '.m2ts', '.f4v',
         # Subtitle formats
-        '.srt', '.ass', '.ssa', '.vtt', '.sub', '.idx', '.sup', '.pgs', '.tp'
+        '.srt', '.ass', '.ssa', '.vtt', '.sub', '.idx', '.sup', '.pgs', '.tp', '.mpg'
     }
     
     
@@ -1394,15 +1395,14 @@ class TVShowOrganizer:
                 tv_show.match_confidence = metadata.match_confidence
                 
                 # Filter seasons: only process seasons that exist in files
-                # (ignore TMDB seasons not present in file structure)
+                # Use replace() to avoid mutating cached metadata (same tmdbid shared across folders)
                 file_season_numbers = {season.season_number for season in tv_show.seasons}
                 if metadata.seasons:
-                    # Filter TMDB seasons to only those that exist in files
                     filtered_tmdb_seasons = [
-                        s for s in metadata.seasons 
+                        s for s in metadata.seasons
                         if s.season_number in file_season_numbers
                     ]
-                    metadata.seasons = filtered_tmdb_seasons
+                    tv_show.tmdb_metadata = replace(metadata, seasons=filtered_tmdb_seasons)
                 
                 # Organize the show
                 success = self.organize_show(tv_show)

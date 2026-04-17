@@ -113,6 +113,8 @@ class TestSeasonExtraction:
             ("刑警处容.Cheo-Yong.S01.2014.1080p.NF.WEB-DL.x264.E-AC3-ATTKC", 1),
             ("一人之下第二季.The.Outcast.S02.2017.1080p.WEB-DL.H265.AAC-HHWEB", 2),
             ("Show.S03.1080p.BluRay.x264.mkv", 3),
+            # AC3 (Dolby Digital) must not be mistaken as season 3 - regression test for 火花 (2000)
+            ("火花.2000.Firework.DVDRip.720p.x264.AC3 tmdb-153792", None),
         ]
         
         all_passed = True

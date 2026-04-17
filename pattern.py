@@ -53,6 +53,8 @@ METADATA_PATTERNS = [
     (r'\b(?:H\.?26[45]|H\.?266)\b', re.IGNORECASE, 'Video codecs (H.264/H.265/H.266 with dots)'),
     (r'\b(?:HEVC|AVC|VP9|VP8|VC-?1|MPEG-?2|MPEG-?4|AV1|VVC|ProRes|DNxHD|DNxHR|Xvid|DivX)\b', re.IGNORECASE, 'Video codecs (HEVC/AVC/AV1/VVC/ProRes)'),
     
+    # Audio codecs (AC3/Dolby Digital - prevents "3" from being mistaken as season number)
+    (r'\b(?:E-?AC-?3|AC-?3)\b', re.IGNORECASE, 'Dolby Digital AC3'),
     # Audio track count
     (r'\b\d+Audios?\b', re.IGNORECASE, 'Audio track count (11Audios, 2Audio)'),
 

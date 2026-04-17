@@ -16,6 +16,11 @@ from tmdbv3api import TMDb, TV, Season as TMDBSeason, Episode as TMDBEpisode
 import requests
 from requests.exceptions import HTTPError
 
+try:
+    from opencc import OpenCC
+except ImportError:
+    OpenCC = None
+
 
 @dataclass
 class AlternativeTitle:
@@ -145,6 +150,7 @@ class TMDBClient:
         self._max_concurrent_requests = max(10, rate_limit // 2)  # Allow more concurrent requests
         self._rate_limit_errors = 0  # Track 429 errors for monitoring
         self.logger = logger or logging.getLogger(__name__)
+        self._traditional_to_simplified = OpenCC("t2s") if OpenCC else None
         
         # Initialize TMDB client
         self.tmdb = TMDb()
@@ -582,10 +588,25 @@ class TMDBClient:
             return True
         else:
             return False
+
+    def _to_simplified_chinese(self, text: Optional[str]) -> Optional[str]:
+        """Convert Chinese text to Simplified Chinese when OpenCC is available."""
+        if not text:
+            return text
+        if self._traditional_to_simplified:
+            return self._traditional_to_simplified.convert(text)
+        return text
+
+    def _is_traditional_chinese(self, text: Optional[str]) -> bool:
+        """Detect whether Chinese text contains Traditional-only characters."""
+        if not text or not self.is_chinese(text):
+            return False
+        simplified_text = self._to_simplified_chinese(text)
+        return bool(simplified_text and simplified_text != text)
     
     def _get_chinese_name_from_alternative_titles(self, tmdb_info: Dict[str, Any]) -> Optional[str]:
         """
-        Get Chinese name from alternative_titles with iso_3166_1 = 'CN'
+        Get a preferred Simplified Chinese name from alternative_titles.
         
         Args:
             tmdb_info: Full TMDB API response dictionary
@@ -594,17 +615,22 @@ class TMDBClient:
             Chinese name if found, None otherwise
         """
         alternative_titles = tmdb_info.get("alternative_titles", {}).get("results", [])
-        for alt_title in alternative_titles:
-            iso_3166_1 = alt_title.get("iso_3166_1")
-            title = alt_title.get("title")
-            if iso_3166_1 == "CN" and title:
-                self.logger.debug(f"  Found Chinese name from alternative_titles: '{title}' (iso_3166_1=CN)")
-                return title
+        for preferred_region in ("CN", "SG"):
+            for alt_title in alternative_titles:
+                iso_3166_1 = alt_title.get("iso_3166_1")
+                title = alt_title.get("title")
+                if iso_3166_1 == preferred_region and title and self.is_chinese(title):
+                    simplified_title = self._to_simplified_chinese(title)
+                    self.logger.debug(
+                        f"  Found preferred Chinese name from alternative_titles: "
+                        f"'{simplified_title}' (iso_3166_1={preferred_region})"
+                    )
+                    return simplified_title
         return None
     
     def _get_chinese_name_from_translations(self, tmdb_info: Dict[str, Any]) -> Optional[str]:
         """
-        Get Chinese name from translations with iso_3166_1 = 'CN'
+        Get a preferred Simplified Chinese name from translations.
         
         Args:
             tmdb_info: Full TMDB API response dictionary
@@ -613,40 +639,54 @@ class TMDBClient:
             Chinese name if found, None otherwise
         """
         translations = tmdb_info.get("translations", {}).get("translations", [])
-        for translation in translations:
-            iso_3166_1 = translation.get("iso_3166_1")
-            name = translation.get("data", {}).get("name")
-            if iso_3166_1 == "CN" and name:
-                self.logger.debug(f"  Found Chinese name from translations: '{name}' (iso_3166_1=CN)")
-                return name
+        for preferred_region in ("CN", "SG"):
+            for translation in translations:
+                iso_3166_1 = translation.get("iso_3166_1")
+                name = translation.get("data", {}).get("name")
+                if iso_3166_1 == preferred_region and name and self.is_chinese(name):
+                    simplified_name = self._to_simplified_chinese(name)
+                    self.logger.debug(
+                        f"  Found preferred Chinese name from translations: "
+                        f"'{simplified_name}' (iso_3166_1={preferred_region})"
+                    )
+                    return simplified_name
         return None
     
     def _ensure_chinese_name(self, result: TVShowMetadata, tmdb_info: Dict[str, Any]) -> None:
         """
-        Ensure the result has a Chinese name. If current name is not Chinese,
-        try to get Chinese name from alternative_titles or translations.
+        Ensure the result uses a Chinese title, preferring Simplified Chinese.
         
         Args:
             result: TVShowMetadata result to update
             tmdb_info: Full TMDB API response dictionary
         """
-        # Check if current name is Chinese
-        if self.is_chinese(result.name):
-            self.logger.debug(f"  Name '{result.name}' is already Chinese, no need to replace")
+        is_current_name_chinese = self.is_chinese(result.name)
+        is_current_name_traditional = self._is_traditional_chinese(result.name)
+
+        if is_current_name_chinese and not is_current_name_traditional:
+            self.logger.debug(f"  Name '{result.name}' is already Simplified Chinese or neutral, no need to replace")
             return
-        
-        self.logger.info(f"  Name '{result.name}' is not Chinese, searching for Chinese name...")
-        
-        # Try to get Chinese name from alternative_titles first
+
+        if is_current_name_traditional:
+            self.logger.info(f"  Name '{result.name}' is Traditional Chinese, searching for Simplified Chinese name...")
+        else:
+            self.logger.info(f"  Name '{result.name}' is not Chinese, searching for Chinese name...")
+
         chinese_name = self._get_chinese_name_from_alternative_titles(tmdb_info)
-        
-        # If not found, try translations
+
         if not chinese_name:
             chinese_name = self._get_chinese_name_from_translations(tmdb_info)
-        
+
         if chinese_name:
             self.logger.info(f"  → Replacing name '{result.name}' with Chinese name '{chinese_name}'")
             result.name = chinese_name
+        elif is_current_name_traditional:
+            simplified_name = self._to_simplified_chinese(result.name)
+            if simplified_name and simplified_name != result.name:
+                self.logger.info(f"  → Converting Traditional Chinese title '{result.name}' to Simplified Chinese '{simplified_name}'")
+                result.name = simplified_name
+            else:
+                self.logger.warning(f"  → No Simplified Chinese name found, keeping original name '{result.name}'")
         else:
             self.logger.warning(f"  → No Chinese name found in alternative_titles or translations, keeping original name")
     
